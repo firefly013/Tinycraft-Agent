@@ -1,0 +1,11 @@
+node_modules/
+dist/
+bots/
+!examples/bots/
+*.jsonl
+state/
+auth.json
+.env
+.DS_Store
+tmp/
+docs/
