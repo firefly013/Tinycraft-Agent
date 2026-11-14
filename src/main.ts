@@ -140,7 +140,7 @@ const verbose = env.TRACE === '1';
 const systemPrompt = resolveSystemPrompt(bot, configRoot, SYSTEM_PROMPT, env.SYSTEM_PROMPT);
 const initMessage = resolveInitMessage(bot, configRoot, INIT_MESSAGE, env.INIT_MESSAGE);
 
-const prompt = systemPrompt;
+let prompt = systemPrompt;
 
 // 结构化日志：bots/<name>/logs/agent-YYYYMMDD.log + request-<页>.log
 const logger = createLogger({ dir: `./${bot.dir}/logs` });
@@ -149,8 +149,15 @@ logger
   .info({ bot: botName, host, port, username, provider: providerId, model: modelId, thinking: thinkingLevel, vision, combat });
 
 // Token 预算：跨进程重启持久化；达到上限写停机标记并退出，supervisor 也会看同一文件。
-const rawBudget = Number(env.TOKEN_BUDGET ?? DEFAULT_TOKEN_BUDGET);
-const tokenLimit = Number.isFinite(rawBudget) && rawBudget > 0 ? Math.floor(rawBudget) : DEFAULT_TOKEN_BUDGET;
+// TOKEN_BUDGET=0（或 unlimited/none）表示不限：只统计用量，不做硬停。
+const rawBudgetText = String(env.TOKEN_BUDGET ?? '').trim().toLowerCase();
+const rawBudget =
+  rawBudgetText === 'unlimited' || rawBudgetText === 'none'
+    ? 0
+    : rawBudgetText === ''
+      ? DEFAULT_TOKEN_BUDGET
+      : Number(rawBudgetText);
+const tokenLimit = Number.isFinite(rawBudget) && rawBudget >= 0 ? Math.floor(rawBudget) : DEFAULT_TOKEN_BUDGET;
 const budgetStatePath = resolve('state', 'token-budget.json');
 const budgetStopPath = resolve('state', 'token-budget-exhausted');
 const budget = createTokenBudget({
@@ -288,7 +295,7 @@ async function waitSpawn(timeoutMs: number): Promise<void> {
 }
 
 await waitSpawn(30_000);
-const kickoff = initMessage;
+let kickoff = initMessage;
 await baseline.kick(kickoff);
 console.log(
   `[${botName}] ${username} 已连上 ${host}:${port}，供应商 ${providerId}/${modelId}，会话在 ${dbPath}${verbose ? '（TRACE 已开）' : ''}`,

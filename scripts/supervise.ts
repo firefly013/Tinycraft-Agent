@@ -16,7 +16,7 @@ const port = Number(argOf('port', '39002'));
 const stuckSec = Math.max(60, Number(argOf('stuck', '600')));
 const restartLimit = Math.max(1, Number(argOf('restart-limit', '8')));
 const base = `http://127.0.0.1:${port}`;
-const logDir = argOf('logdir', 'bots/agent/logs');
+const logDir = argOf('logdir', `bots/${process.env.BOT ?? 'agent'}/logs`);
 mkdirSync(logDir, { recursive: true });
 const logFile = `${logDir}/supervisor.log`;
 
