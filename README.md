@@ -51,33 +51,13 @@ Tinycraft-Agent 不是一个"让模型自由发挥"的框架，而是一台被�
 
 ## 一次动作的生命周期
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant L as LLM
-    participant R as Runner
-    participant C as Control Plane
-    participant B as Body
-    participant M as Minecraft
-
-    R->>L: 世界快照 + 工具清单
-    L-->>R: 一个 tool call（工具 + 参数）
-    R->>C: claim-model
-    C-->>R: 授予执行权
-    R->>B: execute(tool, args)
-    B-->>R: accepted（本轮立即结束）
-    B->>M: 寻路 / 挖掘 / 放置 / 合成 …
-    M-->>B: 世界变化
-    B-->>R: 完成 / 失败 / 检查点
-    R->>C: action-done
-    R->>L: 事件唤醒，进入下一轮
-```
+![一次动作的生命周期](assets/lifecycle.png)
 
 节奏是**异步事件驱动**的：工具调用不会阻塞等结果，而是立刻返回 `accepted` 结束本轮；动作真正完成（或失败）后再用一条事件把模型叫醒。模型不需要轮询，也不会被一个耗时几分钟的动作卡住。
 
 ## 架构
 
-![Tinycraft-Agent 架构](assets/architecture.svg)
+![Tinycraft-Agent 架构](assets/architecture.png)
 
 四层各管一件事：
 
