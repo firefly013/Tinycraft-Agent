@@ -51,13 +51,13 @@ Tinycraft-Agent 不是一个"让模型自由发挥"的框架，而是一台被�
 
 ## 一次动作的生命周期
 
-![一次动作的生命周期](assets/lifecycle.png)
+![一次动作的生命周期](https://cdn.jsdelivr.net/gh/firefly013/Tinycraft-Agent@main/assets/lifecycle.png)
 
 节奏是**异步事件驱动**的：工具调用不会阻塞等结果，而是立刻返回 `accepted` 结束本轮；动作真正完成（或失败）后再用一条事件把模型叫醒。模型不需要轮询，也不会被一个耗时几分钟的动作卡住。
 
 ## 架构
 
-![Tinycraft-Agent 架构](assets/architecture.png)
+![Tinycraft-Agent 架构](https://cdn.jsdelivr.net/gh/firefly013/Tinycraft-Agent@main/assets/architecture.png)
 
 四层各管一件事：
 
