@@ -9,8 +9,8 @@ function run(input: Input, from: ControlState = initialState(), now = NOW): Redu
   return reduce(from, input, now);
 }
 
-function model(tool = 'mineBlock', args: unknown = {}, policy: 'auto' | 'checkpoint' | 'manual' = 'auto'): ControlState {
-  return run({ kind: 'claim-model', tool, args, policy }).state;
+function model(tool = 'mineBlock', args: unknown = {}, resumable = true): ControlState {
+  return run({ kind: 'claim-model', tool, args, resumable }).state;
 }
 
 test('模型认领空闲身体', () => {
@@ -35,8 +35,8 @@ test('反射认领空闲身体', () => {
   assert.equal(r.state.body?.by, 'reflex');
 });
 
-test('反射抢占模型：checkpoint 策略存下进度', () => {
-  const claimed = reduce(model('collectBlock', { type: 'iron_ore' }, 'checkpoint'), { kind: 'checkpoint', value: { got: 3 } }, NOW).state;
+test('反射抢占可续做的模型动作：存下进度', () => {
+  const claimed = reduce(model('collectBlock', { type: 'iron_ore' }), { kind: 'checkpoint', value: { got: 3 } }, NOW).state;
   const r = reduce(claimed, { kind: 'claim-reflex', name: 'combat', priority: 30 }, NOW + 2000);
   assert.equal(r.outcome, 'applied');
   assert.equal(r.state.body?.name, 'combat');
@@ -44,14 +44,13 @@ test('反射抢占模型：checkpoint 策略存下进度', () => {
     tool: 'collectBlock',
     args: { type: 'iron_ore' },
     checkpoint: { got: 3 },
-    policy: 'checkpoint',
     at: NOW + 2000,
   });
   assert.deepEqual(r.effects, [{ kind: 'cancel-action' }]);
 });
 
-test('auto 策略不传检查点（重新开始）', () => {
-  const claimed = reduce(model('mineBlock', {}, 'auto'), { kind: 'checkpoint', value: { got: 1 } }, NOW).state;
+test('没上报检查点的可续做动作：重新开始', () => {
+  const claimed = model('mineBlock');
   const preempted = reduce(claimed, { kind: 'claim-reflex', name: 'combat', priority: 30 }, NOW + 1).state;
   assert.equal(preempted.pendingResume?.checkpoint, undefined);
 
@@ -60,8 +59,8 @@ test('auto 策略不传检查点（重新开始）', () => {
   assert.match(r.trace.detail, /重新开始/);
 });
 
-test('checkpoint 策略续做：检查点原样送回去', () => {
-  const claimed = reduce(model('collectBlock', { type: 'iron_ore' }, 'checkpoint'), { kind: 'checkpoint', value: { got: 3 } }, NOW).state;
+test('有检查点的动作续做：检查点原样送回去', () => {
+  const claimed = reduce(model('collectBlock', { type: 'iron_ore' }), { kind: 'checkpoint', value: { got: 3 } }, NOW).state;
   const preempted = reduce(claimed, { kind: 'claim-reflex', name: 'combat', priority: 30 }, NOW + 1_000).state;
   const r = reduce(preempted, { kind: 'reflex-done', name: 'combat' }, NOW + 8_000);
 
@@ -73,8 +72,8 @@ test('checkpoint 策略续做：检查点原样送回去', () => {
   assert.match(r.trace.detail, /从检查点续做/);
 });
 
-test('manual 策略：被抢占后不续做', () => {
-  const manual = reduce(initialState(), { kind: 'claim-model', tool: 'mineTunnel', args: {}, policy: 'manual' }, NOW).state;
+test('不可续做的动作：被抢占后不续做', () => {
+  const manual = reduce(initialState(), { kind: 'claim-model', tool: 'mineTunnel', args: {}, resumable: false }, NOW).state;
   const preempted = reduce(manual, { kind: 'claim-reflex', name: 'combat', priority: 30 }, NOW + 1).state;
   assert.equal(preempted.pendingResume, null);
   const done = reduce(preempted, { kind: 'reflex-done', name: 'combat' }, NOW + 2);
@@ -99,7 +98,7 @@ test('不让位的反射仍然拒模型动作（战斗/进食）', () => {
 });
 
 test('有等着续做的模型动作时不让位（否则它永远等不到续做）', () => {
-  const goto = model('goTo', {}, 'auto');
+  const goto = model('goTo');
   const pickup = reduce(goto, { kind: 'claim-reflex', name: 'pickup', priority: 10, yieldToModel: true }, NOW + 1).state;
   assert.notEqual(pickup.pendingResume, null);
   const r = reduce(pickup, { kind: 'claim-model', tool: 'mineBlock', args: {} }, NOW + 2);

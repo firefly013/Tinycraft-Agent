@@ -14,7 +14,7 @@
  *   → 身体从断点继续 → 最终只报一条完成事件，附被打断次数。
  */
 import { describe as describeControl, initialState, reduce as reduceControl } from '../core/control.ts';
-import type { ControlState, Effect, Input, ResumePolicy } from '../core/control.ts';
+import type { ControlState, Effect, Input } from '../core/control.ts';
 import { EventIntake } from '../core/intake.ts';
 import type { IntakeDeps } from '../core/intake.ts';
 import { selectReflex } from '../core/reflex.ts';
@@ -78,7 +78,7 @@ interface ActiveCall {
   args: Record<string, unknown>;
   callId: string;
   epoch: number;
-  policy: ResumePolicy;
+  resumable: boolean;
   /** 第几次执行（被抢占后重开一次 +1）。过期结果靠它作废。 */
   attempt: number;
   interrupted: boolean;
@@ -177,13 +177,13 @@ export class Runner {
       };
     }
 
-    // 续做能力由身体侧登记（有 resume 钩子才可续）；没有就等同于原来的 manual。
+    // 续做能力由身体侧登记（有 resume 钩子才可续）；没有就不存 pendingResume。
     const resumable = this.body.canResume?.(name) === true;
     const claim = {
       kind: 'claim-model' as const,
       tool: name,
       args: checked.args,
-      policy: resumable ? ('checkpoint' as const) : ('manual' as const),
+      resumable,
     };
     const reduction = this.reduce(claim);
     if (reduction.outcome !== 'applied') {
@@ -204,7 +204,7 @@ export class Runner {
       args: checked.args,
       callId: `${name}#${++this.callSeq}`,
       epoch: this.state.epoch,
-      policy: resumable ? 'checkpoint' : 'manual',
+      resumable,
       attempt: 0,
       interrupted: false,
       interrupts: 0,

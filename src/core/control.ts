@@ -11,8 +11,6 @@
  */
 import type { TraceNote } from './trace.ts';
 
-export type ResumePolicy = 'auto' | 'checkpoint' | 'manual';
-
 export interface BodyLock {
   by: 'model' | 'reflex';
   name: string;
@@ -22,8 +20,8 @@ export interface BodyLock {
   startedAt: number;
   /** 能不能被更高优先级的反射抢走。 */
   interruptible: boolean;
-  /** 模型动作被抢占后怎么续；反射恒为 manual。 */
-  policy: ResumePolicy;
+  /** 这个动作有没有续做钩子；有才存 pendingResume。 */
+  resumable: boolean;
   /** 执行中上报的检查点；控制面不解包。 */
   checkpoint?: unknown;
   /**
@@ -37,9 +35,8 @@ export interface BodyLock {
 export interface PendingResume {
   tool: string;
   args: unknown;
-  /** auto 时为空；checkpoint 时是身体上报的进度。 */
+  /** 身体上报的进度；没有就重新开始。 */
   checkpoint?: unknown;
-  policy: ResumePolicy;
   at: number;
 }
 
@@ -63,7 +60,7 @@ export type Effect =
   | { kind: 'resolve-tool'; text: string };
 
 export type Input =
-  | { kind: 'claim-model'; tool: string; args: unknown; policy?: ResumePolicy }
+  | { kind: 'claim-model'; tool: string; args: unknown; resumable?: boolean }
   | { kind: 'claim-reflex'; name: string; priority: number; interruptible?: boolean; yieldToModel?: boolean }
   | { kind: 'checkpoint'; value: unknown }
   | { kind: 'reflex-done'; name: string }
@@ -102,7 +99,7 @@ export function reduce(state: ControlState, input: Input, now: number): Reductio
             args: input.args,
             startedAt: now,
             interruptible: true,
-            policy: input.policy ?? 'auto',
+            resumable: input.resumable ?? false,
           };
           return {
             state: { ...state, body },
@@ -120,7 +117,7 @@ export function reduce(state: ControlState, input: Input, now: number): Reductio
         args: input.args,
         startedAt: now,
         interruptible: true,
-        policy: input.policy ?? 'auto',
+        resumable: input.resumable ?? false,
       };
       return {
         state: { ...state, body },
@@ -138,7 +135,7 @@ export function reduce(state: ControlState, input: Input, now: number): Reductio
         args: null,
         startedAt: now,
         interruptible: input.interruptible ?? true,
-        policy: 'manual',
+        resumable: false,
         ...(input.yieldToModel === true ? { yieldToModel: true } : {}),
       };
       const holder = state.body;
@@ -151,18 +148,14 @@ export function reduce(state: ControlState, input: Input, now: number): Reductio
         };
       }
       if (holder.by === 'model') {
-        const pendingResume: PendingResume | null =
-          holder.policy === 'manual'
-            ? null
-            : {
-                tool: holder.name,
-                args: holder.args,
-                ...(holder.policy === 'checkpoint' && holder.checkpoint !== undefined
-                  ? { checkpoint: holder.checkpoint }
-                  : {}),
-                policy: holder.policy,
-                at: now,
-              };
+        const pendingResume: PendingResume | null = holder.resumable
+          ? {
+              tool: holder.name,
+              args: holder.args,
+              ...(holder.checkpoint === undefined ? {} : { checkpoint: holder.checkpoint }),
+              at: now,
+            }
+          : null;
         return {
           state: { ...state, body: next, pendingResume },
           effects: [{ kind: 'cancel-action' }],
@@ -218,7 +211,7 @@ export function reduce(state: ControlState, input: Input, now: number): Reductio
         args: pending.args,
         startedAt: now,
         interruptible: true,
-        policy: pending.policy,
+        resumable: true,
         ...(pending.checkpoint === undefined ? {} : { checkpoint: pending.checkpoint }),
       };
       const resume: Effect =
@@ -278,6 +271,6 @@ export function describe(state: ControlState, now = Date.now()): string {
       : `${state.body.by}:${state.body.name}(${seconds(state.body.startedAt)}s${state.body.by === 'reflex' ? `, prio ${state.body.priority}` : ''})`;
   const resume = state.pendingResume == null
     ? ''
-    : ` resume=${state.pendingResume.tool}(${state.pendingResume.policy}${state.pendingResume.checkpoint === undefined ? '' : ', 有检查点'})`;
+    : ` resume=${state.pendingResume.tool}(${state.pendingResume.checkpoint === undefined ? '重新开始' : '有检查点'})`;
   return `body=${body}${resume} epoch=${state.epoch}`;
 }

@@ -71,18 +71,16 @@ Tinycraft-Agent 把自由度收得很小：**工具面最小、控制流显式�
 ### 控制面：三条转移
 
 ```ts
-type ResumePolicy = 'auto' | 'checkpoint' | 'manual';
-
 interface ControlState {
   epoch: number;                        // 回执是否过期
-  body: BodyLock | null;                // 谁在动身体
+  body: BodyLock | null;                // 谁在动身体（模型动作带 resumable）
   pendingResume: PendingResume | null;  // 被打断的动作 + 检查点
 }
 ```
 
-- **抢占**：更高优先级的反射可以拿走身体；模型动作被抢时，按续做策略决定要不要接着做。
+- **抢占**：更高优先级的反射可以拿走身体；只有登记了 `resume` 钩子的模型动作才会被存进 `pendingResume`。
 - **让位**：标了 `yieldToModel` 的反射（拾取）在模型要动手时立刻退出。
-- **续做**：工具可以在执行中上报检查点；恢复时身体侧用显式 `resume` 钩子接着做，而不是把整个动作重放一遍。
+- **续做**：工具在执行中上报检查点；反射结束后，身体按 `resume` 钩子接着做，而不是重放整个动作。控制面只负责存 `pendingResume`。
 
 ### 反射：不唤醒模型的自动层
 
