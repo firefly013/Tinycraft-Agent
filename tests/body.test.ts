@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createBody, wireBody } from '../src/body/index.ts';
+import { createRequire } from 'node:module';
+import { createBody, createMovements, wireBody } from '../src/body/index.ts';
 import type { BodyOptions, GameBody } from '../src/body/index.ts';
 import type { LogEvent } from '../src/core/events.ts';
 
@@ -529,3 +530,36 @@ test('落地水：下坠 + 水桶 → 发 reflex.mlg（L5、静默），落地�
   body.close();
 });
 
+
+test('寻路：两格内的间接流动也会拒绝挖掘', () => {
+  const require = createRequire(import.meta.url);
+  const mcData = require('minecraft-data')('1.21.4');
+  const waterId = mcData.blocksByName.water.id;
+  const stoneId = mcData.blocksByName.stone.id;
+  const airId = mcData.blocksByName.air.id;
+  const world = new Map<string, string>();
+  const key = (x: number, y: number, z: number): string => `${x},${y},${z}`;
+  const set = (x: number, y: number, z: number, name: string): void => { world.set(key(x, y, z), name); };
+  set(0, 64, 0, 'stone'); // 要挖的方块
+  set(1, 64, 0, 'air'); // 中间格：可流通
+  set(1, 63, 0, 'stone'); // 中间格的底（有支撑，水才会水平流）
+  set(2, 64, 0, 'water'); // 隔一格的液体
+  const bot = {
+    version: '1.21.4',
+    registry: mcData,
+    entity: { position: { x: 0, y: 64, z: 0 } },
+    pathfinder: { setMovements: () => {}, thinkTimeout: 0, searchRadius: 0 },
+    collectBlock: {},
+    blockAt: (pos: { x: number; y: number; z: number }) => {
+      const name = world.get(key(pos.x, pos.y, pos.z)) ?? 'air';
+      const type = name === 'water' ? waterId : name === 'stone' ? stoneId : airId;
+      return { name, type, boundingBox: name === 'stone' ? 'block' : 'empty', shapes: [], position: pos };
+    },
+  };
+  const profile = createMovements(bot as any);
+  const stone = { type: stoneId, position: { x: 0, y: 64, z: 0 }, boundingBox: 'block', shapes: [] };
+  const reach = profile?.reach as { safeToBreak: (block: unknown) => boolean };
+  assert.equal(reach.safeToBreak(stone), false, '隔一格有水，不能挖');
+  set(2, 64, 0, 'air');
+  assert.equal(reach.safeToBreak(stone), true, '水没了就能挖');
+});

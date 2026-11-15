@@ -41,6 +41,7 @@ const customPvpModule = require('@nxg-org/mineflayer-custom-pvp') as {
 };
 const customPvp = customPvpModule.default ?? (customPvpModule as unknown as (bot: AnyBot) => void);
 const Movements = (require('mineflayer-pathfinder') as { Movements: new (bot: AnyBot) => AnyMovements }).Movements;
+const { Vec3 } = require('vec3') as { Vec3: new (x: number, y: number, z: number) => any };
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type AnyBot = any;
@@ -108,7 +109,54 @@ function reflexContext(signal: AbortSignal): ActionContext {
  * 自由度的硬边界是**不掉血**：下落最多 3 格（MC 从第 4 格才开始摔伤），
  * 并避开岩浆、火、仙人掌、甜浆果、岩浆块等伤害方块；不做无碰撞自由移动。
  */
-function createMovements(bot: AnyBot): MovementProfile | null {
+/** 液体方块：水/岩浆（含流动）。 */
+function isLiquidBlock(block: any): boolean {
+  if (block == null) return false;
+  const name = String(block.name ?? '');
+  return name === 'water' || name === 'flowing_water' || name === 'lava' || name === 'flowing_lava' || block.liquid === true;
+}
+
+/**
+ * 挖开这个方块之后，两格内的液体会不会经一个空气格流进来？
+ *
+ * 库自带的 `dontCreateFlow` 只查紧邻一格（正上方 + 四个侧面）；这里补第二步：
+ * 紧邻格可流通、下方有支撑时，再看它外侧一格有没有液体。固定约 20 次 blockAt，
+ * 常数开销，可以放进 A* 的 safeToBreak 里反复调用。
+ */
+function indirectLiquidRisk(bot: AnyBot, block: any): boolean {
+  const position = block?.position;
+  if (position == null) return false;
+  const at = (x: number, y: number, z: number): any => {
+    try {
+      return bot.blockAt(new Vec3(x, y, z), false);
+    } catch {
+      return null;
+    }
+  };
+  const directions = [
+    [1, 0],
+    [-1, 0],
+    [0, 1],
+    [0, -1],
+  ];
+  for (const [dx, dz] of directions) {
+    const nx = position.x + dx;
+    const nz = position.z + dz;
+    const neighbor = at(nx, position.y, nz);
+    if (neighbor == null || isLiquidBlock(neighbor)) continue;
+    if (String(neighbor.boundingBox ?? '') !== 'empty') continue; // 中间格不通
+    const below = at(nx, position.y - 1, nz);
+    if (below == null) continue;
+    if (String(below.boundingBox ?? '') !== 'block' && !isLiquidBlock(below)) continue; // 没有底，水会往下落
+    for (const [ex, ez] of directions) {
+      if (ex === -dx && ez === -dz) continue; // 不回头
+      if (isLiquidBlock(at(nx + ex, position.y, nz + ez))) return true;
+    }
+  }
+  return false;
+}
+
+export function createMovements(bot: AnyBot): MovementProfile | null {
   try {
     const reach = new Movements(bot);
     reach.canDig = true;
@@ -149,6 +197,12 @@ function createMovements(bot: AnyBot): MovementProfile | null {
       const block = bot.registry?.blocksByName?.[name];
       if (block?.id != null) reach.blocksToAvoid.add(block.id);
     }
+
+    // 库的 `dontCreateFlow` 默认开，但只挡紧邻一格；再补一层"隔一格"的间接流动：
+    // 水可以先流进旁边那格空气，再灌进刚挖开的洞（历史"斜着挖穿水层"就是这样）。
+    const baseSafeToBreak = reach.safeToBreak.bind(reach);
+    reach.safeToBreak = (block: any): boolean =>
+      baseSafeToBreak(block) && !indirectLiquidRisk(bot, block);
 
     // A* 默认只思考 5 秒；长距离/复杂洞穴里会假性 NoPath。给核心工具足够预算。
     if (bot.pathfinder != null) {
