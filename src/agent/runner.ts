@@ -234,7 +234,7 @@ export class Runner {
     return (await this.tool(name, args)).text;
   }
 
-  /** 一条事件进来：先给反射层（它可能抢占），再投递（L5 只记录、不唤醒）。 */
+  /** 一条事件进来：先给反射层（它可能抢占），再投递（L5 写记录、不唤醒）。 */
   notify(event: LogEvent): void {
     // 身体没了：正在跑的动作和反射都必须停，锁不能留着。
     if (event.type === 'system.disconnected') {
@@ -249,12 +249,13 @@ export class Runner {
     const verdict = selectReflex(this.reflexes, event.type, this.activeReflex());
     // 停机清理期间不放反射进来：清理要独占身体，抢进来就是两只手抢同一副身体。
     if (verdict.kind === 'run' && !this.stopping) this.startReflex(verdict.spec);
-    // 静默事件只用于触发反射，不进模型上下文。
+    // 静默事件不唤醒模型，但会写进上下文：模型下一轮能看到反射做过什么。
     if (event.silent === true) {
       // 反射一旦真的接管了身体，模型正在生成的那一轮就该掐掉——它的结论必然是
       // 撞 busy。没抢到（被更高级反射占着）就什么都不动。
       const claimed = verdict.kind === 'run' && this.activeReflex()?.name === verdict.spec.name;
       if (claimed) void this.intake.interrupt();
+      this.intake.notify(event);
       return;
     }
     this.intake.notify(event);

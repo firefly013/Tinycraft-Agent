@@ -9,7 +9,7 @@
  *   2 写记录，不唤醒
  *   3 请求空闲就立刻整批 submit；请求在飞就整流，等 requestFinished 一起带走
  *   4 abort → 撤回在途批次 → 立刻 submit
- *   5 基线设计不唤醒：只写记录；身体由反射层接管
+ *   5 不唤醒：写进上下文（下一次请求能看到）；身体由反射层接管
  */
 import { batchText, isValidLevel, LEVEL } from './events.ts';
 import type { LogEvent } from './events.ts';
@@ -203,9 +203,11 @@ export class EventIntake {
         return;
       }
       case LEVEL.EMERGENCY: {
-        // 基线设计：L5 不唤醒模型，只写记录；身体由反射层接管。
+        // L5 不唤醒模型，只写记录；身体由反射层接管。
+        // 是否打断在途请求由调用方决定：静默事件只在反射真的接管时由 Runner 调 interrupt()，
+        // 这里再 abort 一次只会误伤刚开始的新请求。
         this.writes.push(event);
-        await this.abortAndWithdraw(deps);
+        if (event.silent !== true) await this.abortAndWithdraw(deps);
         deps.onEvent?.(event, 'emergency');
         return;
       }

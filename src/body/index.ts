@@ -491,7 +491,7 @@ export function wireBody(bot: AnyBot, options: BodyOptions): GameBody {
       5,
       `战斗接管：${plan?.reason ?? `${engageable.length} 个近处目标，见啥打啥`}；我战力 ${combatPower(self)}，目标 ${orderText(engageable)}`,
       { reflex: COMBAT_REFLEX, action: plan?.action ?? 'engage' },
-      // 静默事件：只用来触发反射，不写进模型上下文——自动打怪对模型无感。
+      // 静默事件：触发反射，不唤醒模型；作为一条记录写进上下文，模型下一轮能看到。
       true,
     );
   };

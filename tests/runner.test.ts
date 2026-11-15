@@ -228,7 +228,7 @@ test('拾取让位：模型动作直接拿到身体（不 busy），反射被 ab
   );
 });
 
-test('静默反射接管：掐掉正在生成的那一轮，不写、不唤醒', async () => {
+test('静默反射接管：掐掉正在生成的那一轮，写进上下文但不唤醒', async () => {
   let release = (): void => {};
   const h = harness({
     runReflex: async () => {
@@ -241,18 +241,19 @@ test('静默反射接管：掐掉正在生成的那一轮，不写、不唤醒',
   h.runner.notify({ ...event('hostile'), silent: true });
   await waitFor(() => h.aborts() === 1);
   assert.deepEqual(h.submits, [], '反射期间绝不唤醒');
-  assert.deepEqual(h.writes, [], '静默事件不进上下文');
   release();
   await h.runner.settleReflexes();
+  await h.runner.settleDelivery();
+  assert.deepEqual(h.writes, ['hostile'], '静默事件作为记录写进上下文');
 });
 
-test('静默事件：触发反射，但不写进模型上下文', async () => {
+test('静默事件：触发反射，写进上下文但不唤醒', async () => {
   const h = harness();
   h.runner.notify({ ...event('hostile'), silent: true });
   await h.runner.settleReflexes();
   await h.runner.settleDelivery();
-  assert.deepEqual(h.writes, []);
-  assert.deepEqual(h.submits, []);
+  assert.deepEqual(h.writes, ['hostile'], '静默事件写进上下文');
+  assert.deepEqual(h.submits, [], '不唤醒模型');
 });
 
 test('checkpoint 策略：被抢占后从上报的进度续做，最终只报一条完成事件', async () => {
