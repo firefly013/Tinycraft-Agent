@@ -44,6 +44,16 @@ export interface Primitive {
    * 实现必须幂等、不抛；没有检查点/没有留下现场时返回空字符串。
    */
   stop?: (context: ActionContext, checkpoint: unknown) => Promise<string>;
+  /**
+   * **续做钩子**（可选）：被抢占后从检查点继续。没登记 = 不可续做。
+   *
+   * 和 stop 对称：编排层在身体锁还在动作身上时调用，`checkpoint` 是抢占时存下的值。
+   */
+  resume?: (
+    args: Record<string, unknown>,
+    context: ActionContext,
+    checkpoint: unknown,
+  ) => Promise<string>;
 }
 
 /** 最大自由度的 pathfinder 配置。GoTo 是核心移动工具，不能因为“不想乱挖”而 NoPath。 */
@@ -52,6 +62,7 @@ export interface MovementProfile {
 }
 
 const DEFAULT_TIMEOUT_MS = 120_000;
+
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -270,12 +281,12 @@ async function descendShaft(
     const colZ = Math.floor(here.z);
     const below = bot.blockAt(new Vec3(colX, feetY - 1, colZ));
     if (below == null) return { ok: false, message: `(${colX},${feetY - 1},${colZ}) 没加载` };
-    if (isWaterBlockName(String(below.name)) || below.name === 'lava' || below.name === 'flowing_lava') {
+    if (liquidKind(below) != null) {
       return { ok: false, message: `脚下是 ${below.name}（y=${feetY - 1}）` };
     }
     for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
       const side = bot.blockAt(new Vec3(colX + dx, feetY - 1, colZ + dz));
-      if (side != null && (isWaterBlockName(String(side.name)) || side.name === 'lava' || side.name === 'flowing_lava')) {
+      if (side != null && liquidKind(side) != null) {
         return { ok: false, message: `旁边有 ${side.name}（y=${feetY - 1}）` };
       }
     }
@@ -300,6 +311,114 @@ function isWaterBlockName(name: string): boolean {
   return name === 'water' || name === 'flowing_water';
 }
 
+/** 方块是不是液体：water/flowing_water 或 lava/flowing_lava。 */
+function liquidKind(block: any): 'water' | 'lava' | null {
+  const name = String(block?.name ?? '');
+  if (name === 'water' || name === 'flowing_water') return 'water';
+  if (name === 'lava' || name === 'flowing_lava') return 'lava';
+  return null;
+}
+
+/** 这个方块挖不动的原因；null = 可以挖。液体在数据里 diggable 是错的，单独判。 */
+function digRefusal(block: any): string | null {
+  const liquid = liquidKind(block);
+  if (liquid != null) return `${liquid === 'lava' ? '岩浆' : '水'}是液体，挖不了`;
+  const name = String(block?.name ?? '').replace('minecraft:', '');
+  const UNBREAKABLE = new Set([
+    'bedrock', 'barrier', 'end_portal', 'end_portal_frame', 'nether_portal',
+    'command_block', 'chain_command_block', 'repeating_command_block',
+    'jigsaw', 'structure_block', 'light', 'moving_piston',
+  ]);
+  if (UNBREAKABLE.has(name)) return `${name} 不可破坏`;
+  if (block?.diggable === false) return `${name} 挖不动（需要工具或根本不可破坏）`;
+  const hardness = Number(block?.hardness);
+  if (Number.isFinite(hardness) && hardness < 0) return `${name} 不可破坏`;
+  return null;
+}
+
+/**
+ * 挖开这个方块之后，液体（水/岩浆）会不会流到 Bot 身上？
+ *
+ * 判定的是"挖开导致的接触"，不是"Bot 现在是否泡在液体里"：
+ * 以目标六邻里的液体为源，按 Minecraft 的流动规则（向下直落、有支撑才水平扩散）
+ * 走一遍空气格；只要流到 Bot 的脚下或头部格，就拒绝。
+ */
+function digLiquidRisk(
+  bot: any,
+  target: { x: number; y: number; z: number },
+): { kind: 'water' | 'lava'; where: '脚下' | '头部' } | null {
+  const pos = bot.entity?.position;
+  if (pos == null) return null;
+  const tx = Math.floor(target.x);
+  const ty = Math.floor(target.y);
+  const tz = Math.floor(target.z);
+  const feet = { x: Math.floor(pos.x), y: Math.floor(pos.y + 0.1), z: Math.floor(pos.z) };
+  const head = { x: feet.x, y: feet.y + 1, z: feet.z };
+  const blockName = (x: number, y: number, z: number): string =>
+    String(bot.blockAt(new Vec3(x, y, z))?.name ?? '');
+  const isPassable = (x: number, y: number, z: number): boolean => {
+    if (x === tx && y === ty && z === tz) return true; // 挖开后就是空气
+    const block = bot.blockAt(new Vec3(x, y, z));
+    if (block == null) return false;
+    return String(block.boundingBox ?? '') === 'empty';
+  };
+  const liquidAt = (x: number, y: number, z: number): 'water' | 'lava' | null =>
+    liquidKind(bot.blockAt(new Vec3(x, y, z)));
+  const isBotCell = (x: number, y: number, z: number): boolean =>
+    x === feet.x && z === feet.z && (y === feet.y || y === head.y);
+
+  // 目标本身是液体：挖它就是直接接触。
+  const selfLiquid = liquidAt(tx, ty, tz);
+  if (selfLiquid != null) return { kind: selfLiquid, where: '脚下' };
+
+  type Cell = { x: number; y: number; z: number; kind: 'water' | 'lava' };
+  const queue: Cell[] = [];
+  const seen = new Set<string>();
+  const push = (cell: Cell): void => {
+    const key = `${cell.x},${cell.y},${cell.z}`;
+    if (seen.has(key)) return;
+    if (Math.abs(cell.x - tx) > 6 || Math.abs(cell.z - tz) > 6) return;
+    if (cell.y > ty + 2 || cell.y < ty - 6) return;
+    seen.add(key);
+    queue.push(cell);
+  };
+  for (const [dx, dy, dz] of [[0, 1, 0], [0, -1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1]]) {
+    const x = tx + dx;
+    const y = ty + dy;
+    const z = tz + dz;
+    const kind = liquidAt(x, y, z);
+    if (kind == null) continue;
+    // Bot 自己那格本来就有液体：只说明"已经泡着"，不是"挖开导致的接触"。
+    if (isBotCell(x, y, z)) continue;
+    push({ x, y, z, kind });
+  }
+
+  while (queue.length > 0 && seen.size <= 32) {
+    const cell = queue.shift() as Cell;
+    if (isBotCell(cell.x, cell.y, cell.z)) {
+      // 已经泡在液体里的那格不算"新接触"；只有空气格被淹才算。
+      if (liquidAt(cell.x, cell.y, cell.z) != null) continue;
+      return { kind: cell.kind, where: cell.y === feet.y ? '脚下' : '头部' };
+    }
+    // 向下直落
+    if (isPassable(cell.x, cell.y - 1, cell.z)) {
+      push({ x: cell.x, y: cell.y - 1, z: cell.z, kind: cell.kind });
+    }
+    // 水平扩散：目标格或空气，且下方有支撑（否则应该继续往下落）
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const nx = cell.x + dx;
+      const nz = cell.z + dz;
+      if (!isPassable(nx, cell.y, nz)) continue;
+      const below = bot.blockAt(new Vec3(nx, cell.y - 1, nz));
+      const supported =
+        below != null && (String(below.boundingBox ?? '') === 'block' || liquidKind(below) != null);
+      if (!supported) continue;
+      push({ x: nx, y: cell.y, z: nz, kind: cell.kind });
+    }
+  }
+  return null;
+}
+
 /** 找附近"往下这段没有水"的柱子（只看脚下 24 格，扫太深会拖垮 blockAt）。 */
 function findDryColumn(bot: any, origin: { x: number; y: number; z: number }, maxRadius = 16): { x: number; z: number } | null {
   const ox = Math.floor(origin.x);
@@ -310,7 +429,7 @@ function findDryColumn(bot: any, origin: { x: number; y: number; z: number }, ma
     for (let y = yTop; y >= yBottom; y -= 4) {
       const block = bot.blockAt(new Vec3(x, y, z));
       if (block == null) return false;
-      if (isWaterBlockName(String(block.name))) return false;
+      if (liquidKind(block) != null) return false;
     }
     return true;
   };
@@ -751,6 +870,7 @@ async function smeltInFurnace(
   args: Record<string, unknown>,
   context: ActionContext,
   timeoutMs: number,
+  resumeFrom: unknown,
 ): Promise<string> {
   const spec = parseItemSpec(args.items);
   if (spec.length !== 1) return 'smelt 需要 items：一种原料，例如 "iron_ore:5"';
@@ -766,7 +886,7 @@ async function smeltInFurnace(
   if (fuel == null) return `背包里没有燃料 ${fuelName}`;
   const fuelId = bot.registry?.itemsByName?.[fuelName]?.id ?? fuel.type;
   // 被打断后回来续做：检查点里有熔炉坐标就回现场；没有就重新找。
-  const resume = context.resume as { furnace?: { x: number; y: number; z: number } } | null | undefined;
+  const resume = resumeFrom as { furnace?: { x: number; y: number; z: number } } | null | undefined;
   const resumeAt = resume?.furnace ?? null;
   const block = resumeAt != null ? await walkBackToFurnace(bot, resumeAt, context) : await findOrPlaceFurnace(bot, args.coords, context);
   if (typeof block === 'string') return block;
@@ -897,6 +1017,192 @@ async function cleanFurnaceOnStop(bot: any, context: ActionContext, checkpoint: 
 export function makePrimitives(bot: any, deps: PrimitiveDeps = {}): Record<string, Primitive> {
   const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const timeoutSeconds = Math.round(timeoutMs / 1000);
+  /** 收方块：priorInput = 已经收了多少（续做时从检查点来，第一次是 0）。 */
+  async function collectBlockRun(
+    args: Record<string, unknown>,
+    context: ActionContext,
+    priorInput: number,
+  ): Promise<string> {
+    const name = String(args.type).replace(/^minecraft:/, '');
+    const want = Math.min(64, Math.max(1, Number(args.count ?? 1)));
+    const scope = String(args.scope ?? 'near');
+    if (scope !== 'near' && scope !== 'loaded') return 'collectBlock 的 scope 只能是 near（默认，按半径扫）或 loaded（扫所有已加载区块）';
+    const loadedScope = scope === 'loaded';
+    const radius = Math.max(8, Math.min(128, Math.floor(Number(args.radius ?? 32) || 32)));
+    const prior = Math.max(0, Math.floor(Number(priorInput) || 0));
+    const remaining = Math.max(0, want - prior);
+    if (remaining === 0) return `收集 ${name}：已经够了（${prior}/${want}）`;
+    const targets = loadedScope
+      ? nearestBlocksLoaded(bot, name, remaining)
+      : nearestBlocks(bot, name, remaining, radius);
+    if (targets.length === 0) {
+      return prior > 0
+        ? `收集 ${name}：已经收了 ${prior} 个，附近没有更多了`
+        : loadedScope
+          ? `已加载区块内没找到 ${name}`
+          : `附近 ${radius} 格内没找到 ${name}（只扫描已加载区块）`;
+    }
+
+    // **不把寻路+挖矿+捡起全交给 collectblock 插件**：真机上插件对“石头”
+    // 目标会把 pathfinder 拖成内存炸弹（1GB/20 秒，进程 OOM 退出）。这里
+    // 自己走：通常步行靠近 → 换收获工具 → dig → 捡；每一步都有超时/取消。
+    // 水里挖矿掉落会沉水里、人也会被淹：先把人挪到干的地方。
+
+    // 挖不动的（液体/基岩等）直接跳过；紧挨着水/岩浆的也跳过。
+    const diggableTargets = targets.filter((target: any) => {
+      const block = bot.blockAt(target.position);
+      return block != null && digRefusal(block) == null;
+    });
+    if (diggableTargets.length === 0) {
+      return `收集 ${name}：找到的 ${targets.length} 个目标都挖不动（液体/不可破坏）`;
+    }
+    const dryTargets = diggableTargets.filter((target: any) => digLiquidRisk(bot, target.position) == null);
+    if (dryTargets.length === 0) {
+      return `收集 ${name}：附近 ${targets.length} 个目标挖开后都会把水/岩浆引到身上，先 goTo 到别处再挖。`;
+    }
+    const safeTargets = dryTargets;
+    const dropNames = blockDropNames(bot, name);
+    const countDrops = (): number => dropNames.reduce((sum, drop) => sum + countInventory(bot, drop), 0);
+    const before = countDrops();
+    let got = prior;
+    const movementSet = deps.movements?.() ?? null;
+    if (movementSet != null) bot.pathfinder.setMovements(movementSet.reach);
+    try {
+      await bounded(
+        (async () => {
+          for (const target of safeTargets) {
+            if (context.signal.aborted || got >= want) break;
+            const block = bot.blockAt(target.position);
+            if (block == null || block.name === 'air') continue;
+            try {
+              await bounded(
+                bot.pathfinder.goto(new goals.GoalNear(target.position.x, target.position.y, target.position.z, 1.5)),
+                context,
+                () => bot.pathfinder.stop?.(),
+                30_000,
+                `走向 ${name} 超过 30 秒`,
+              );
+            } catch {
+              if (context.signal.aborted) throw new Error('aborted');
+              continue; // 够不着就换下一个目标
+            }
+            await ensureHarvestTool(bot, block);
+            const plan = planDig(bot, block, false);
+            if (!plan.ok) throw new Error(plan.note);
+            try {
+              await bounded(
+                bot.dig(block),
+                context,
+                () => bot.stopDigging?.(),
+                timeoutMs,
+                `挖 ${name} 超过 ${timeoutSeconds} 秒`,
+              );
+            } catch {
+              if (context.signal.aborted) throw new Error('aborted');
+              continue;
+            }
+            await pickupDrops(bot, context, { radius: 6, budgetMs: 2_000 });
+            got = Math.max(got, prior + (countDrops() - before));
+            context.checkpoint({ got });
+          }
+        })(),
+        context,
+        () => {
+          bot.collectBlock?.cancelTask?.();
+          bot.pathfinder.stop?.();
+          bot.stopDigging?.();
+        },
+        6 * 60_000,
+        `收集 ${name} 超过 6 分钟`,
+      );
+    } catch (error: unknown) {
+      if (context.signal.aborted) return `收集 ${name} 被打断（进度 ${got}/${want} 已上报）`;
+      return `收集 ${name} 失败：${errorText(error)}（进度 ${got}/${want}）`;
+    } finally {
+      if (movementSet != null) bot.pathfinder.setMovements(movementSet.reach);
+    }
+    const finalGot = Math.max(got, prior + (countDrops() - before));
+    if (finalGot !== got) context.checkpoint({ got: finalGot });
+    const picked = await pickupDrops(bot, context);
+    const drops = dropNames.join('、');
+    return `收集 ${name}：掉了 ${drops}，本次新增 ${Math.max(0, finalGot - prior)} 个，累计 ${finalGot}/${want}${picked > 0 ? `，捡了 ${picked} 处掉落物` : ''}`;
+  }
+  /** 跳起垫脚：priorPlaced = 已经垫了几格（续做时从检查点来，第一次是 0）。 */
+  async function placeHereRun(
+    args: Record<string, unknown>,
+    context: ActionContext,
+    priorPlaced: number,
+  ): Promise<string> {
+    const name = String(args.type).replace(/^minecraft:/, '');
+    const count = Math.max(1, Math.min(8, Math.floor(Number(args.count ?? 1)) || 1));
+    const item = bot.inventory.items().find((entry: any) => entry.name === name);
+    if (item == null) return `背包里没有 ${name}`;
+    const air = (block: any): boolean =>
+      block != null &&
+      (block.boundingBox === 'empty' || ['air', 'cave_air', 'void_air'].includes(String(block.name)));
+    const waitFor = async (check: () => boolean, timeoutMs: number): Promise<boolean> => {
+      const started = Date.now();
+      while (Date.now() - started < timeoutMs) {
+        if (context.signal.aborted) return false;
+        if (check()) return true;
+        await sleep(20);
+      }
+      return false;
+    };
+    let placed = Math.max(0, Math.floor(Number(priorPlaced) || 0));
+    for (let step = placed; step < count; step += 1) {
+      if (!(await waitFor(() => bot.entity?.onGround === true, 2_000))) {
+        return placed > 0 ? `垫高了 ${placed} 格；人在空中/没落地，先停下` : '人没站在地上，垫不了';
+      }
+      const position = bot.entity.position;
+      const cell = { x: Math.floor(position.x), y: Math.floor(position.y), z: Math.floor(position.z) };
+      if (
+        !air(bot.blockAt(new Vec3(cell.x, cell.y + 1, cell.z))) ||
+        !air(bot.blockAt(new Vec3(cell.x, cell.y + 2, cell.z)))
+      ) {
+        return placed > 0 ? `垫高了 ${placed} 格；头顶被挡，跳不起来` : '头顶被挡，跳不起来';
+      }
+      const reference = bot.blockAt(new Vec3(cell.x, cell.y - 1, cell.z));
+      if (reference == null || reference.boundingBox !== 'block') {
+        return placed > 0 ? `垫高了 ${placed} 格；脚下不是实心方块` : '脚下不是实心方块，垫不了';
+      }
+      await bot.equip(item, 'hand');
+      const startY = position.y;
+      bot.setControlState?.('jump', true);
+      const jumped = await waitFor(
+        () => bot.entity.position.y >= startY + 1.0 && Number(bot.entity.velocity?.y ?? 0) <= 0.15,
+        1_500,
+      );
+      if (!jumped) {
+        bot.setControlState?.('jump', false);
+        return placed > 0 ? `垫高了 ${placed} 格；这次没跳起来` : '没跳起来（可能被挡住）';
+      }
+      try {
+        await bounded(
+          bot.placeBlock(reference, new Vec3(0, 1, 0)),
+          context,
+          () => bot.stopDigging?.(),
+          5_000,
+          `放 ${name} 超过 5 秒`,
+        );
+      } catch (error: unknown) {
+        bot.setControlState?.('jump', false);
+        if (context.signal.aborted) return `垫脚被中断（已垫 ${placed} 格）`;
+        return `垫脚时没放成 ${name}：${errorText(error)}（已垫 ${placed} 格）`;
+      }
+      bot.setControlState?.('jump', false);
+      await waitFor(() => bot.entity.onGround === true, 2_000);
+      const after = bot.blockAt(new Vec3(cell.x, cell.y, cell.z));
+      if (after == null || after.name !== name) {
+        return placed > 0
+          ? `垫高了 ${placed} 格；下一格没放成（回读 ${after?.name ?? '未知'}）`
+          : `没放成 ${name}（回读 ${after?.name ?? '未知'}）`;
+      }
+      placed += 1;
+      context.checkpoint({ placed });
+    }
+    return `跳起来垫了 ${placed} 格（${name}）`;
+  }
   const prims: Record<string, Primitive> = {
     goTo: async (args, context) => {
       const x = Number(args.x);
@@ -915,7 +1221,10 @@ export function makePrimitives(bot: any, deps: PrimitiveDeps = {}): Record<strin
       // 深目标（比如从地表下到 y=-59）A* 搜索量很大：20 秒 thinkTimeout 会超时，
       // 而 mineflayer-pathfinder 的 goto() 在"空路径"时是**静默 resolve**（不报错），
       // 表现为"走两步就说到不了"。深目标临时把搜索预算调大，结束后还原。
-      const deepTarget = Math.abs(y - start.y) > 24;
+      // 只有"向下很远"才套用下潜逻辑（找干柱子、竖直下挖、放大 A* 预算）；
+      // 向上很远是爬升，复用普通分段推进即可，否则 1e9 的单段搜索会静默 NoPath。
+      const dy = y - start.y;
+      const deepTarget = dy < -24;
       const previousThinkTimeout = bot.pathfinder?.thinkTimeout;
       if (deepTarget && bot.pathfinder != null) {
         bot.pathfinder.thinkTimeout = Math.max(Number(bot.pathfinder.thinkTimeout) || 0, 60_000);
@@ -957,7 +1266,7 @@ export function makePrimitives(bot: any, deps: PrimitiveDeps = {}): Record<strin
           }
           lastHealth = health;
         }
-        // 深目标挖到水里：不等 drown 反射来抢（它一抢就打断当前这段寻路，
+        // 深目标挖到水里：直接停手换位置（继续挖会把人淹进来，
         // goTo 永远走不到"换位置"的分支）。这里先把这段寻路停掉，让主循环换位置。
         if (deepTarget && bot.entity?.isInWater === true) {
           const current = bot.entity?.position;
@@ -1026,7 +1335,7 @@ export function makePrimitives(bot: any, deps: PrimitiveDeps = {}): Record<strin
           if (remaining <= 1.5) break;
           if (segment < 2) break;
           if (stopForHealth()) break;
-          // 深目标挖穿地下水层：越挖越湿，drown 反射会反复把身体抢回去。
+          // 深目标挖穿地下水层：越挖越湿，人会一直泡在水里。
           // 先自己换个位置再挖（小模型不会改坐标），换两次还不行才报错。
           if (deepTarget && remaining > 6 && (waterHit || bot.entity?.isInWater === true)) {
             waterHit = false;
@@ -1119,7 +1428,9 @@ export function makePrimitives(bot: any, deps: PrimitiveDeps = {}): Record<strin
       const block = bot.blockAt(position);
       if (block == null) return `(${position.x},${position.y},${position.z}) 看不到（区块没加载或超出范围）`;
       if (block.name === 'air') return `(${position.x},${position.y},${position.z}) 已经是空气`;
-      if (block.diggable === false) return `${block.name} 挖不动（需要工具或根本不可破坏）`;
+      // 液体/基岩/传送门框等挖不动的方块：dig 会白等到超时，提前拒绝（force 也不放行）。
+      const refusal = digRefusal(block);
+      if (refusal != null) return `(${position.x},${position.y},${position.z}) ${refusal}；别挖它，绕开或换目标`;
       if (isFootingBlock(bot.entity?.position, block.position)) {
         return `没有挖 ${block.name}（${position.x},${position.y},${position.z}）：它是你脚下的承重方块，挖了会掉下去。`;
       }
@@ -1130,6 +1441,16 @@ export function makePrimitives(bot: any, deps: PrimitiveDeps = {}): Record<strin
       if (eye != null) {
         const reach = Math.hypot(position.x + 0.5 - eye.x, position.y + 0.5 - eye.y, position.z + 0.5 - eye.z);
         if (reach > 4.5) return `离 (${position.x},${position.y},${position.z}) 有 ${reach.toFixed(1)} 格，太远够不着；先 goTo 过去`;
+      }
+
+      // 液体保护：只看"挖开之后液体会不会流到 Bot 身上"，不管 Bot 现在是否已经在液体里。
+      // 会流到脚下/头部就默认拒绝；确认安全用 force:true 显式放行。
+      const risk = digLiquidRisk(bot, position);
+      if (risk != null && args.force !== true) {
+        const what = risk.kind === 'lava' ? '岩浆' : '水';
+        const danger = risk.kind === 'lava' ? '会烧死' : '会被淹';
+        const target = risk.where === '头部' ? '头上' : '脚下';
+        return `没有挖 ${block.name}（${position.x},${position.y},${position.z}）：挖开之后${what}会流到你${target}，${danger}。先换个位置；确认安全再加 force:true。`;
       }
 
       const force = args.force === true;
@@ -1157,15 +1478,20 @@ export function makePrimitives(bot: any, deps: PrimitiveDeps = {}): Record<strin
 
     placeBlock: async (args, context) => {
       const name = String(args.type);
+      const key = name.replace(/^minecraft:/, '');
       const position = new Vec3(Number(args.x), Number(args.y), Number(args.z));
+      const where = `(${position.x},${position.y},${position.z})`;
       const target = bot.blockAt(position);
-      if (target == null) return `(${position.x},${position.y},${position.z}) 看不到（区块没加载）`;
+      if (target == null) return `${where} 看不到（区块没加载）`;
+      const targetName = String(target.name);
+      // 目标已经是我们要放的方块：不是失败，是"上次已经放好/不用再放"。
+      if (targetName === name || targetName === key) {
+        return `${where} 已经是 ${key}，不用再放`;
+      }
       const replaceable =
         target.boundingBox === 'empty' ||
-        ['air', 'cave_air', 'void_air', 'water', 'lava', 'short_grass', 'tall_grass'].includes(String(target.name));
-      if (!replaceable) return `(${position.x},${position.y},${position.z}) 已经有 ${target.name}，不能再放`;
-
-      const key = name.replace(/^minecraft:/, '');
+        ['air', 'cave_air', 'void_air', 'water', 'lava', 'short_grass', 'tall_grass'].includes(targetName);
+      if (!replaceable) return `${where} 已经有 ${targetName}，不能再放 ${name}`;
       const item = bot.inventory
         .items()
         .find((entry: any) => entry.name === name || entry.name === key);
@@ -1228,146 +1554,9 @@ export function makePrimitives(bot: any, deps: PrimitiveDeps = {}): Record<strin
       return `右键了 ${block.name}（${position.x},${position.y},${position.z}）`;
     },
 
-    collectBlock: async (args, context) => {
-      const name = String(args.type).replace(/^minecraft:/, '');
-      const want = Math.min(64, Math.max(1, Number(args.count ?? 1)));
-      const scope = String(args.scope ?? 'near');
-      if (scope !== 'near' && scope !== 'loaded') return 'collectBlock 的 scope 只能是 near（默认，按半径扫）或 loaded（扫所有已加载区块）';
-      const loadedScope = scope === 'loaded';
-      const radius = Math.max(8, Math.min(128, Math.floor(Number(args.radius ?? 32) || 32)));
-      const prior = Number((context.resume as { got?: number } | undefined)?.got ?? 0);
-      const remaining = Math.max(0, want - prior);
-      if (remaining === 0) return `收集 ${name}：已经够了（${prior}/${want}）`;
-      const targets = loadedScope
-        ? nearestBlocksLoaded(bot, name, remaining)
-        : nearestBlocks(bot, name, remaining, radius);
-      if (targets.length === 0) {
-        return prior > 0
-          ? `收集 ${name}：已经收了 ${prior} 个，附近没有更多了`
-          : loadedScope
-            ? `已加载区块内没找到 ${name}`
-            : `附近 ${radius} 格内没找到 ${name}（只扫描已加载区块）`;
-      }
+    collectBlock: (args, context) => collectBlockRun(args, context, 0),
 
-      // **不把寻路+挖矿+捡起全交给 collectblock 插件**：真机上插件对“石头”
-      // 目标会把 pathfinder 拖成内存炸弹（1GB/20 秒，进程 OOM 退出）。这里
-      // 自己走：通常步行靠近 → 换收获工具 → dig → 捡；每一步都有超时/取消。
-      // 水里挖矿会被 drown 反射反复打断，掉落还会沉水里：先把人挪到干的地方。
-      if (bot.entity?.isInWater === true) {
-        return `收集 ${name}：你正在水里，先 goTo 到干的岸上，再从那里挖。`;
-      }
-      // 紧挨着水的方块先跳过：挖开等于自己放水淹自己。
-      const dryTargets = targets.filter((target: any) => {
-        const block = bot.blockAt(target.position);
-        if (block == null) return false;
-        if (isWaterBlockName(String(block.name))) return false;
-        for (const [dx, dy, dz] of [[0, 1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1]]) {
-          const base = block.position;
-          const neighborPos = typeof base?.offset === 'function' ? base.offset(dx, dy, dz) : new Vec3(base.x + dx, base.y + dy, base.z + dz);
-          const neighbor = bot.blockAt(neighborPos);
-          if (neighbor != null && isWaterBlockName(String(neighbor.name))) return false;
-        }
-        return true;
-      });
-      if (dryTargets.length === 0) {
-        return `收集 ${name}：附近 ${targets.length} 个目标都紧挨着地下水（挖开会被淹），先 goTo 到别处再挖。`;
-      }
-      const safeTargets = dryTargets;
-      const dropNames = blockDropNames(bot, name);
-      const countDrops = (): number => dropNames.reduce((sum, drop) => sum + countInventory(bot, drop), 0);
-      const before = countDrops();
-      let got = prior;
-      const movementSet = deps.movements?.() ?? null;
-      if (movementSet != null) bot.pathfinder.setMovements(movementSet.reach);
-      try {
-        await bounded(
-          (async () => {
-            for (const target of safeTargets) {
-              if (context.signal.aborted || got >= want) break;
-              const block = bot.blockAt(target.position);
-              if (block == null || block.name === 'air') continue;
-              try {
-                await bounded(
-                  bot.pathfinder.goto(new goals.GoalNear(target.position.x, target.position.y, target.position.z, 1.5)),
-                  context,
-                  () => bot.pathfinder.stop?.(),
-                  30_000,
-                  `走向 ${name} 超过 30 秒`,
-                );
-              } catch {
-                if (context.signal.aborted) throw new Error('aborted');
-                continue; // 够不着就换下一个目标
-              }
-              await ensureHarvestTool(bot, block);
-              const plan = planDig(bot, block, false);
-              if (!plan.ok) throw new Error(plan.note);
-              try {
-                await bounded(
-                  bot.dig(block),
-                  context,
-                  () => bot.stopDigging?.(),
-                  timeoutMs,
-                  `挖 ${name} 超过 ${timeoutSeconds} 秒`,
-                );
-              } catch {
-                if (context.signal.aborted) throw new Error('aborted');
-                continue;
-              }
-              await pickupDrops(bot, context, { radius: 6, budgetMs: 2_000 });
-              got = Math.max(got, prior + (countDrops() - before));
-              context.checkpoint({ got });
-            }
-          })(),
-          context,
-          () => {
-            bot.collectBlock?.cancelTask?.();
-            bot.pathfinder.stop?.();
-            bot.stopDigging?.();
-          },
-          6 * 60_000,
-          `收集 ${name} 超过 6 分钟`,
-        );
-      } catch (error: unknown) {
-        if (context.signal.aborted) return `收集 ${name} 被打断（进度 ${got}/${want} 已上报）`;
-        return `收集 ${name} 失败：${errorText(error)}（进度 ${got}/${want}）`;
-      } finally {
-        if (movementSet != null) bot.pathfinder.setMovements(movementSet.reach);
-      }
-      const finalGot = Math.max(got, prior + (countDrops() - before));
-      if (finalGot !== got) context.checkpoint({ got: finalGot });
-      const picked = await pickupDrops(bot, context);
-      const drops = dropNames.join('、');
-      return `收集 ${name}：掉了 ${drops}，本次新增 ${Math.max(0, finalGot - prior)} 个，累计 ${finalGot}/${want}${picked > 0 ? `，捡了 ${picked} 处掉落物` : ''}`;
-    },
-
-    placeHere: async (args, context) => {
-      const name = String(args.type).replace(/^minecraft:/, '');
-      const pos = bot.entity?.position;
-      if (pos == null) return '读不到当前位置，放不了';
-      const cell = { x: Math.floor(pos.x), y: Math.floor(pos.y), z: Math.floor(pos.z) };
-      const target = bot.blockAt(new Vec3(cell.x, cell.y, cell.z));
-      if (target == null) return `(${cell.x},${cell.y},${cell.z}) 看不到方块`;
-      const replaceable =
-        target.boundingBox === 'empty' ||
-        ['air', 'cave_air', 'void_air', 'water', 'lava', 'short_grass', 'tall_grass'].includes(String(target.name));
-      if (!replaceable) return `脚下 (${cell.x},${cell.y},${cell.z}) 已经有 ${target.name}，放不了 ${name}`;
-      const reference = bot.blockAt(new Vec3(cell.x, cell.y - 1, cell.z));
-      if (reference == null || reference.name === 'air' || reference.boundingBox !== 'block') {
-        return `脚下 (${cell.x},${cell.y},${cell.z}) 下方没有可依附的实心方块，放不了 ${name}`;
-      }
-      const item = bot.inventory.items().find((entry: any) => entry.name === name);
-      if (item == null) return `背包里没有 ${name}`;
-      try {
-        await bot.equip(item, 'hand');
-        await bounded(bot.placeBlock(reference, new Vec3(0, 1, 0)), context, () => bot.stopDigging?.(), 10_000, `放 ${name} 超过 10 秒`);
-      } catch (error: unknown) {
-        if (context.signal.aborted) return `放 ${name} 被中断了`;
-        return `没放成 ${name}：${errorText(error)}`;
-      }
-      const after = bot.blockAt(new Vec3(cell.x, cell.y, cell.z));
-      const actual = after?.name ?? '未知';
-      return `尝试在脚下 (${cell.x},${cell.y},${cell.z}) 放 ${name}，回读是 ${actual}（身体所在格，服务器可能拒绝）`;
-    },
+    placeHere: (args, context) => placeHereRun(args, context, 0),
 
     container: async (args, context) => {
       const op = String(args.op ?? '');
@@ -1537,7 +1726,7 @@ export function makePrimitives(bot: any, deps: PrimitiveDeps = {}): Record<strin
     furnace: async (args, context) => {
       const op = String(args.op ?? '');
       if (!['read', 'put', 'take', 'smelt'].includes(op)) return 'furnace 的 op 只能是 read / put / take / smelt';
-      if (op === 'smelt') return smeltInFurnace(bot, args, context, timeoutMs);
+      if (op === 'smelt') return smeltInFurnace(bot, args, context, timeoutMs, null);
       // take 不给 slot 时取产物槽（最常见的诉求）；put 必须点名 input/fuel。
       // 参数校验放在找方块之前：参数错了就不该去开窗口。
       const slot = String(args.slot ?? (op === 'take' ? 'output' : ''));
@@ -1549,10 +1738,6 @@ export function makePrimitives(bot: any, deps: PrimitiveDeps = {}): Record<strin
         block.position == null
           ? String(block.name ?? '熔炉')
           : `${block.name} @(${block.position.x},${block.position.y},${block.position.z})`;
-      // put 会被自动续做；但"放了几份"没法从炉子外面确认，所以不重放——先让模型看一眼。
-      if (op === 'put' && context.resume != null) {
-        return '这一轮被打断了，不确定放进去几份：先用 furnace read 看一眼，再决定要不要补';
-      }
       if (op === 'put' && block.position != null) {
         context.checkpoint({ op: 'put', furnace: { x: block.position.x, y: block.position.y, z: block.position.z } });
       }
@@ -1786,5 +1971,46 @@ export function makePrimitives(bot: any, deps: PrimitiveDeps = {}): Record<strin
   };
   // 有序停机的清理钩子：只有"会把东西留在外部世界"的动作需要它。
   prims.furnace.stop = (context, checkpoint) => cleanFurnaceOnStop(bot, context, checkpoint);
+  // 续做钩子：只有登记了的动作会被自动续做（没登记 = 抢占后不续）。
+  prims.goTo.resume = (args, context) => prims.goTo(args, context);
+  prims.collectBlock.resume = (args, context, checkpoint) =>
+    collectBlockRun(args, context, Number((checkpoint as { got?: number } | null)?.got ?? 0));
+  prims.furnace.resume = async (args, context, checkpoint) => {
+    const op = String(args.op ?? '');
+    // 烧炼能按炉子现场的槽位继续；put 放了几份从外面确认不了，先让模型看一眼。
+    if (op === 'smelt') return smeltInFurnace(bot, args, context, timeoutMs, checkpoint);
+    if (op === 'put') return '这一轮被打断了，不确定放进去几份：先用 furnace read 看一眼，再决定要不要补';
+    return prims.furnace(args, context);
+  };
+  prims.useBlock.resume = (args, context) => prims.useBlock(args, context);
+  prims.placeHere.resume = (args, context, checkpoint) =>
+    placeHereRun(args, context, Number((checkpoint as { placed?: number } | null)?.placed ?? 0));
+  prims.mineBlock.resume = async (args, context) => {
+    const position = new Vec3(Number(args.x), Number(args.y), Number(args.z));
+    const block = bot.blockAt(position);
+    if (block != null && block.name === 'air') {
+      return `续做确认：(${position.x},${position.y},${position.z}) 已经是空气，上次已经挖掉了`;
+    }
+    return prims.mineBlock(args, context);
+  };
+  prims.attack.resume = async (args, context) => {
+    const key = args.entityId == null ? '' : String(args.entityId);
+    const entity = key === '' ? null : (bot.entities as Record<string, unknown> | undefined)?.[key];
+    if (key !== '' && entity == null) {
+      return `续做确认：目标 ${key} 已经不在了（可能已经死了）`;
+    }
+    return prims.attack(args, context);
+  };
+  prims.placeBlock.resume = async (args, context) => {
+    // 目标已经是我们要放的方块：续做确认成功，而不是回一句"已经有，不能再放"。
+    const name = String(args.type);
+    const key = name.replace(/^minecraft:/, '');
+    const position = new Vec3(Number(args.x), Number(args.y), Number(args.z));
+    const target = bot.blockAt(position);
+    if (target != null && (String(target.name) === name || String(target.name) === key)) {
+      return `续做确认：(${position.x},${position.y},${position.z}) 已经是 ${key}，上次已经放好，不需要再放`;
+    }
+    return prims.placeBlock(args, context);
+  };
   return prims;
 }

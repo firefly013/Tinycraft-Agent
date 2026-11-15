@@ -8,6 +8,7 @@
 import { createRequire } from 'node:module';
 import { estimateTokens } from '../shared/live_state.ts';
 import { MOB_PROFILES, armorPoints, combatPower, mobProfilePower } from './combat.ts';
+import { nearestBlocks } from './ores.ts';
 import {
   KEY_BLOCK_SET,
   PERCEPTION_BUDGET_TOKENS,
@@ -200,6 +201,7 @@ export function sampleLiveState(ctx: SampleContext): LiveState {
     blocks: [],
     blocksTruncated: 0,
     blocksSummary: [],
+    fluids: [],
     screenshot: { ref: null, unavailableReason: 'no vision data yet' },
     goal: ctx.goal ?? null,
     meta: { gamemode: null, openScreen: null, currentAction: ctx.currentAction ?? null, posture: null },
@@ -325,6 +327,28 @@ export function sampleLiveState(ctx: SampleContext): LiveState {
     empty.blocks = budgetedList(found, PERCEPTION_LIMIT, PERCEPTION_BUDGET_TOKENS, blockCost);
     empty.blocksTruncated = Math.max(0, found.length - empty.blocks.length);
     empty.blocksSummary = summarizeOmitted(found.slice(empty.blocks.length), feet);
+
+    // 造黑曜石/传送门要的水和岩浆通常离得远，关键方块里看不见；直接扫最近一处。
+    // 桶只从源方块取液体：流动的水/岩浆舀不起来，所以只报 level 0 的源头。
+    empty.fluids = [];
+    for (const fluid of ['water', 'lava'] as const) {
+      try {
+        const nearest = nearestBlocks(bot as any, fluid, 16, 128).find(
+          (block: any) => Number(block?.getProperties?.().level ?? 0) === 0,
+        );
+        const bp = nearest?.position;
+        if (bp == null) continue;
+        empty.fluids.push({
+          name: fluid,
+          distance: Math.round(dist3(bp.x, bp.y, bp.z, feet.x, feet.y, feet.z) * 10) / 10,
+          x: bp.x,
+          y: bp.y,
+          z: bp.z,
+        });
+      } catch {
+        // 扫描失败不影响快照。
+      }
+    }
 
     empty.screenshot = screenshotOf(ctx.vision);
 

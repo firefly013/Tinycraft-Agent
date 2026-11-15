@@ -166,6 +166,8 @@ export interface LiveState {
   blocks: LiveBlock[];
   blocksTruncated: number;
   blocksSummary: string[];
+  /** 全已加载区块里最近的水、岩浆（没有就不列），给造黑曜石/找液体指路。 */
+  fluids: LiveBlock[];
   screenshot: LiveScreenshot;
   goal: string | null;
   meta: LiveMeta;
@@ -492,6 +494,14 @@ const SECTION_RENDERERS: Readonly<Record<string, (s: LiveState) => string[]>> = 
     }
     if (s.blocksSummary.length > 0) lines.push(`更远：${s.blocksSummary.map(itemShort).join('、')}`);
     return lines;
+  },
+  fluids: (s) => {
+    if (s.fluids.length === 0) return [];
+    const tag = (n: string): string => (n === 'water' ? '水' : '岩浆');
+    const bits = s.fluids.map(
+      (f) => `${tag(f.name)} 最近 ${f.distance} 格 (${fmt(f.x)}, ${fmt(f.y)}, ${fmt(f.z)})`,
+    );
+    return [`寻找液体（全已加载区块）：${bits.join('；')}`];
   },
   screenshot: (s) => {
     const shot = s.screenshot;

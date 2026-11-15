@@ -3,13 +3,13 @@ import assert from 'node:assert/strict';
 import { makePrimitives, pickWeapon } from '../src/body/primitives.ts';
 import type { ActionContext } from '../src/shared/body.ts';
 
-function context(resume?: unknown): { ctx: ActionContext; aborter: AbortController; checkpoints: unknown[] } {
+function context(): { ctx: ActionContext; aborter: AbortController; checkpoints: unknown[] } {
   const aborter = new AbortController();
   const checkpoints: unknown[] = [];
   return {
     aborter,
     checkpoints,
-    ctx: { signal: aborter.signal, resume, checkpoint: (value) => checkpoints.push(value) },
+    ctx: { signal: aborter.signal, checkpoint: (value) => checkpoints.push(value) },
   };
 }
 
@@ -228,9 +228,9 @@ test('收集：从检查点续做，只补剩下的', async () => {
     },
   });
   const prims = makePrimitives(bot);
-  const { ctx } = context({ got: 2 });
+  const { ctx } = context();
 
-  const text = await prims.collectBlock?.({ type: 'iron_ore', count: 4 }, ctx);
+  const text = await prims.collectBlock?.resume?.({ type: 'iron_ore', count: 4 }, ctx, { got: 2 });
   assert.equal(requested, 2, '已经收了 2 个，只找剩下的 2 个');
   assert.equal(dug, 2);
   assert.match(text ?? '', /累计 4\/4/);
@@ -427,8 +427,11 @@ test('furnace smelt：从检查点回来，按观测补料并继续', async () =
     inventory: { items: () => [{ name: 'coal', count: 5, slot: 1 }], slots: [] },
   });
   const prims = makePrimitives(bot);
-  const { ctx } = context({ op: 'smelt', furnace: { x: 1, y: 64, z: 0 } });
-  const text = await prims.furnace?.({ op: 'smelt', items: 'iron_ore:3', fuel: 'coal' }, ctx);
+  const { ctx } = context();
+  const text = await prims.furnace?.resume?.({ op: 'smelt', items: 'iron_ore:3', fuel: 'coal' }, ctx, {
+    op: 'smelt',
+    furnace: { x: 1, y: 64, z: 0 },
+  });
   assert.match(text ?? '', /烧出 3 个 iron_ingot/);
   assert.deepEqual(calls.filter((c) => c === 'fuel'), [], '燃料槽还有就不重复投');
   assert.ok(calls.includes('input:3'), '原料槽空了才补');
@@ -660,22 +663,192 @@ test('custom-pvp：攻击走 swordpvp，并停掉插件', async () => {
   assert.ok(stopCalls >= 1, '结束后必须 stopPvp');
 });
 
-test('placeHere：在脚下放方块，回执说明身体占位', async () => {
-  const placed: string[] = [];
+test('placeBlock：续做时目标已经放好，回执是确认而不是失败', async () => {
+  const bot = baseBot({
+    inventory: { items: () => [{ name: 'dirt', count: 5 }], slots: [] },
+    blockAt: () => ({ name: 'dirt', boundingBox: 'block' }),
+  });
+  const prims = makePrimitives(bot);
+  const { ctx } = context();
+  const text = await prims.placeBlock?.resume?.({ type: 'dirt', x: 1, y: 64, z: 0 }, ctx, { type: 'dirt' });
+  assert.match(text ?? '', /续做确认/);
+  assert.match(text ?? '', /已经是 dirt/);
+});
+
+test('placeBlock：目标已经是同一方块时不说“不能再放”', async () => {
+  const bot = baseBot({
+    inventory: { items: () => [{ name: 'dirt', count: 5 }], slots: [] },
+    blockAt: () => ({ name: 'dirt', boundingBox: 'block' }),
+  });
+  const prims = makePrimitives(bot);
+  const { ctx } = context();
+  const text = await prims.placeBlock?.({ type: 'dirt', x: 1, y: 64, z: 0 }, ctx);
+  assert.match(text ?? '', /已经是 dirt，不用再放/);
+  assert.doesNotMatch(text ?? '', /不能再放/);
+});
+
+test('mineBlock：自己已经泡在水里不算“挖开导致接触”，不因此拒绝', async () => {
+  const stone = { name: 'stone', boundingBox: 'block', position: { x: 1, y: 64, z: 0 } };
   const bot = baseBot({
     entity: { position: { x: 0.5, y: 64, z: 0.5 } },
-    blockAt: (pos: { x: number; y: number; z: number }) =>
-      pos.y === 64 ? { name: 'air', position: pos, boundingBox: 'empty' } : { name: 'stone', position: pos, boundingBox: 'block' },
-    inventory: { items: () => [{ name: 'dirt', count: 3, slot: 36 }], slots: [] },
+    blockAt: (pos: any) => {
+      const x = Math.floor(pos.x);
+      const y = Math.floor(pos.y);
+      const z = Math.floor(pos.z);
+      if (x === 1 && y === 64 && z === 0) return stone;
+      if (x === 0 && y === 64 && z === 0) return { name: 'water', boundingBox: 'empty' }; // Bot 脚下本来就泡着
+      if (y <= 63) return { name: 'stone', boundingBox: 'block' };
+      return { name: 'air', boundingBox: 'empty' };
+    },
+  });
+  const prims = makePrimitives(bot);
+  const { ctx } = context();
+  const text = await prims.mineBlock?.({ x: 1, y: 64, z: 0 }, ctx);
+  assert.doesNotMatch(text ?? '', /流到你/);
+  // 没有被液体保护挡住：要么挖了，要么是别的失败原因。
+  assert.match(text ?? '', /挖掉了|没挖动|没有能收获/);
+});
+
+test('mineBlock：挖开会把水引到头上时拒绝', async () => {
+  const stone = { name: 'stone', boundingBox: 'block', position: { x: 0, y: 66, z: 0 } };
+  const bot = baseBot({
+    entity: { position: { x: 0.5, y: 64, z: 0.5 } },
+    blockAt: (pos: any) => {
+      const x = Math.floor(pos.x);
+      const y = Math.floor(pos.y);
+      const z = Math.floor(pos.z);
+      if (x === 0 && y === 66 && z === 0) return stone;                 // 目标
+      if (x === 0 && y === 67 && z === 0) return { name: 'water', boundingBox: 'empty' }; // 上方水源
+      if (y <= 63) return { name: 'stone', boundingBox: 'block' };       // 地面
+      return { name: 'air', boundingBox: 'empty' };
+    },
+  });
+  const prims = makePrimitives(bot);
+  const { ctx } = context();
+  const text = await prims.mineBlock?.({ x: 0, y: 66, z: 0 }, ctx);
+  assert.match(text ?? '', /水会流到你头上/);
+  assert.match(text ?? '', /会被淹/);
+});
+
+test('mineBlock：挖开会把岩浆引到脚下时拒绝', async () => {
+  const stone = { name: 'stone', boundingBox: 'block', position: { x: 1, y: 64, z: 0 } };
+  const bot = baseBot({
+    entity: { position: { x: 0.5, y: 64, z: 0.5 } },
+    blockAt: (pos: any) => {
+      const x = Math.floor(pos.x);
+      const y = Math.floor(pos.y);
+      const z = Math.floor(pos.z);
+      if (x === 1 && y === 64 && z === 0) return stone;                 // 目标
+      if (x === 2 && y === 64 && z === 0) return { name: 'lava', boundingBox: 'empty' }; // 侧面岩浆
+      if (y <= 63) return { name: 'stone', boundingBox: 'block' };       // 地面
+      return { name: 'air', boundingBox: 'empty' };
+    },
+  });
+  const prims = makePrimitives(bot);
+  const { ctx } = context();
+  const text = await prims.mineBlock?.({ x: 1, y: 64, z: 0 }, ctx);
+  assert.match(text ?? '', /岩浆会流到你脚下/);
+  assert.match(text ?? '', /会烧死/);
+});
+
+test('mineBlock：水/岩浆直接拒绝，force 也不放行', async () => {
+  const water = { name: 'water', boundingBox: 'empty', position: { x: 1, y: 64, z: 0 } };
+  const bot = baseBot({
+    entity: { position: { x: 0.5, y: 64, z: 0.5 } },
+    blockAt: () => water,
+  });
+  const prims = makePrimitives(bot);
+  const { ctx } = context();
+  const text = await prims.mineBlock?.({ x: 1, y: 64, z: 0, force: true }, ctx);
+  assert.match(text ?? '', /液体，挖不了/);
+  assert.doesNotMatch(text ?? '', /挖掉了/);
+});
+
+test('mineBlock：基岩等不可破坏方块直接拒绝', async () => {
+  const bedrock = { name: 'bedrock', boundingBox: 'block', diggable: false, position: { x: 1, y: 64, z: 0 } };
+  const bot = baseBot({
+    entity: { position: { x: 0.5, y: 64, z: 0.5 } },
+    blockAt: () => bedrock,
+  });
+  const prims = makePrimitives(bot);
+  const { ctx } = context();
+  const text = await prims.mineBlock?.({ x: 1, y: 64, z: 0 }, ctx);
+  assert.match(text ?? '', /不可破坏/);
+});
+
+test('收集：全是液体时直接说挖不动，不发起 dig', async () => {
+  let dug = 0;
+  const blocks = [{ name: 'water', position: { x: 1, y: 64, z: 0 }, boundingBox: 'empty' }];
+  const bot = baseBot({
+    entity: { position: { x: 0, y: 64, z: 0 } },
+    registry: { itemsByName: {}, blocksByName: { water: { id: 9 } } },
+    findBlocks: (options: { count: number }) => blocks.map((block) => block.position).slice(0, options.count),
+    blockAt: (pos: { x: number }) => blocks.find((block) => block.position.x === pos.x) ?? null,
+    inventory: { items: () => [], slots: [] },
+    dig: async () => {
+      dug += 1;
+    },
+  });
+  const prims = makePrimitives(bot);
+  const { ctx } = context();
+  const text = await prims.collectBlock?.({ type: 'water', count: 1 }, ctx);
+  assert.match(text ?? '', /都挖不动/);
+  assert.equal(dug, 0, '液体不应该发起 dig');
+});
+
+test('mineBlock：续做时目标已是空气，回执是确认而不是失败', async () => {
+  const bot = baseBot({ blockAt: () => ({ name: 'air', boundingBox: 'empty' }) });
+  const prims = makePrimitives(bot);
+  const { ctx } = context();
+  const text = await prims.mineBlock?.resume?.({ x: 1, y: 64, z: 0 }, ctx, { x: 1, y: 64, z: 0 });
+  assert.match(text ?? '', /续做确认/);
+  assert.match(text ?? '', /已经是空气/);
+});
+
+test('attack：续做时目标已经消失，回执是确认而不是失败', async () => {
+  const bot = baseBot({ entities: {} });
+  const prims = makePrimitives(bot);
+  const { ctx } = context();
+  const text = await prims.attack?.resume?.({ entityId: 7 }, ctx, null);
+  assert.match(text ?? '', /续做确认/);
+  assert.match(text ?? '', /已经不在了/);
+});
+
+test('placeHere：跳起来在脚下垫方块', async () => {
+  const calls: string[] = [];
+  const entity: any = { position: { x: 0.5, y: 64, z: 0.5 }, onGround: true, velocity: { y: 0 } };
+  let placed = false;
+  const bot = baseBot({
+    entity,
+    inventory: { items: () => [{ name: 'dirt', count: 4 }], slots: [] },
+    blockAt: (pos: { x: number; y: number; z: number }) => {
+      if (pos.y === 64) return placed ? { name: 'dirt', boundingBox: 'block' } : { name: 'air', boundingBox: 'empty' };
+      if (pos.y > 64) return { name: 'air', boundingBox: 'empty' };
+      return { name: 'stone', boundingBox: 'block' };
+    },
+    setControlState: (state: string, on: boolean) => {
+      if (state !== 'jump') return;
+      if (on) {
+        entity.onGround = false;
+        entity.position.y = 65.25;
+        entity.velocity.y = 0;
+      } else {
+        calls.push('jump-off');
+      }
+    },
     equip: async () => {},
-    placeBlock: async () => { placed.push('dirt'); },
+    placeBlock: async () => {
+      placed = true;
+      entity.onGround = true;
+      entity.position.y = 65;
+      calls.push('place');
+    },
     stopDigging: () => {},
   });
   const prims = makePrimitives(bot);
   const text = await prims.placeHere?.({ type: 'dirt' }, context().ctx);
-  assert.equal(placed.length, 1);
-  assert.match(text ?? '', /尝试在脚下/);
-  assert.match(text ?? '', /身体所在格/);
+  assert.deepEqual(calls.filter((c) => c === 'place'), ['place']);
+  assert.match(text ?? '', /垫了 1 格/);
 });
 
 test('container：inspect 读内容，take/put 调用 withdraw/deposit', async () => {
@@ -757,6 +930,28 @@ test('goTo：失败时把 pathfinder 错误原样交给模型', async () => {
   const text = await prims.goTo?.({ x: 5, y: 65, z: 5 }, context().ctx);
   assert.match(text ?? '', /没走到/);
   assert.match(text ?? '', /NoPath/);
+});
+
+test('goTo：向上很远也分段推进，不套用下潜逻辑', async () => {
+  const position = { x: 0, y: 64, z: 0 };
+  const goals: Array<{ x: number; y: number; z: number }> = [];
+  const bot: Record<string, any> = baseBot({
+    entity: { position },
+    pathfinder: {
+      setMovements: () => {},
+      goto: async (goal: any) => {
+        goals.push({ x: goal.x, y: goal.y, z: goal.z });
+        position.x = goal.x;
+        position.y = goal.y;
+        position.z = goal.z;
+      },
+      stop: () => {},
+    },
+  });
+  const prims = makePrimitives(bot);
+  await prims.goTo?.({ x: 0, y: 120, z: 0 }, context().ctx);
+  assert.ok(goals.length > 1, `向上应分段，实际 ${goals.length} 次`);
+  assert.ok(goals.every((goal) => goal.y <= 120));
 });
 
 test('goTo：长距离分成多段推进，不一次 A* 搜到底', async () => {

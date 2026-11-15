@@ -8,7 +8,6 @@
 import type { ReflexSpec } from '../core/reflex.ts';
 
 export const MLG_REFLEX = 'mlg';
-export const DROWN_REFLEX = 'drown';
 export const COMBAT_REFLEX = 'combat';
 export const EAT_REFLEX = 'eat';
 export const PICKUP_REFLEX = 'pickup';
@@ -17,8 +16,6 @@ export const REFLEXES: readonly ReflexSpec[] = [
   // 落地水：最高优先级——摔死不能等，也不能被模型动作踩掉。
   // 触发条件是"正在掉 + 够高 + 背包有 water_bucket"，由身体每 tick 检测。
   { name: MLG_REFLEX, priority: 40, interruptible: false, types: ['reflex.mlg'] },
-  // 溺水：水下数 tick（不用 bot.oxygenLevel，那版元数据是坏的）；掉血也会立刻触发。
-  { name: DROWN_REFLEX, priority: 38, interruptible: false, types: ['reflex.drown'] },
   // 战斗：只在身体扫描判定"该动手"时收到 reflex.engage（L5），所以优先级不高。
   { name: COMBAT_REFLEX, priority: 30, interruptible: true, types: ['reflex.engage'] },
   // 进食：低血自动吃。优先级低于战斗——打架时抢身体只会被伤害打断，没意义。

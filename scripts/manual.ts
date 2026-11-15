@@ -100,7 +100,6 @@ async function run(line: string): Promise<void> {
   }
   const result = await body.execute(name, checked.args, {
     signal: new AbortController().signal,
-    resume: undefined,
     checkpoint: () => {},
   });
   console.log(result.text);

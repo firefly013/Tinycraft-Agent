@@ -2,13 +2,12 @@
  * 14 个工具：模型看到的全部能力面。
  *
  * 名字沿用旧仓库（模型已经学会）；**说明文字全部在 `src/prompts.ts`**，
- * 这里只留结构：名字、占不占身体、续做策略、参数类型。
+ * 这里只留结构：名字、占不占身体、参数类型。
  *
  * 动作工具的执行契约由 Runner 统一保证：**调用立刻 accepted，完成以 L3 Tool
  * 事件回报**。`mode` 字段只保留给历史查询/本地工具语义，动作工具一律异步。
  *
- * 续做策略：只有明确标了 `auto`/`checkpoint` 的会机械续做，其余默认 `manual`。
- * 有副作用的动作（mineBlock/placeBlock/inventory/attack…）不允许被抢占后自动重放。
+ * 续做能力由身体侧原语登记的 `resume` 钩子决定：没登记 = 抢占后不续做。
  */
 import { TOOL_TEXT } from '../prompts.ts';
 import type { ToolDeclaration } from '../shared/tools.ts';
@@ -21,15 +20,13 @@ const DECLARATIONS: readonly Declaration[] = [
     name: 'goTo',
     mode: 'async',
     action: true,
-    resume: 'auto',
     params: { x: { type: 'int' }, y: { type: 'int' }, z: { type: 'int' } },
   },
   {
     name: 'mineBlock',
     mode: 'async',
     action: true,
-    // 有副作用：抢到一半被打断不自动重放。
-    resume: 'manual',
+    // 有副作用：身体侧没有登记 resume，抢占后不续做。
     params: {
       x: { type: 'int' },
       y: { type: 'int' },
@@ -41,7 +38,6 @@ const DECLARATIONS: readonly Declaration[] = [
     name: 'collectBlock',
     mode: 'async',
     action: true,
-    resume: 'checkpoint',
     params: {
       type: { type: 'string' },
       count: { type: 'int', optional: true },
@@ -53,21 +49,18 @@ const DECLARATIONS: readonly Declaration[] = [
     name: 'placeBlock',
     mode: 'async',
     action: true,
-    resume: 'manual',
     params: { type: { type: 'string' }, x: { type: 'int' }, y: { type: 'int' }, z: { type: 'int' } },
   },
   {
     name: 'placeHere',
     mode: 'async',
     action: true,
-    resume: 'manual',
-    params: { type: { type: 'string' } },
+    params: { type: { type: 'string' }, count: { type: 'int', optional: true } },
   },
   {
     name: 'container',
     mode: 'async',
     action: true,
-    resume: 'manual',
     params: {
       op: { type: 'string' },
       items: { type: 'string', optional: true },
@@ -79,14 +72,12 @@ const DECLARATIONS: readonly Declaration[] = [
     name: 'useBlock',
     mode: 'async',
     action: true,
-    resume: 'manual',
     params: { x: { type: 'int' }, y: { type: 'int' }, z: { type: 'int' } },
   },
   {
     name: 'craft',
     mode: 'async',
     action: true,
-    resume: 'manual',
     params: { item: { type: 'string' }, count: { type: 'int', optional: true } },
   },
   {
@@ -94,7 +85,6 @@ const DECLARATIONS: readonly Declaration[] = [
     mode: 'async',
     action: true,
     // 只对 smelt 有效（它写检查点）；put 被续做时只回一句"不确定，先看一眼"。
-    resume: 'checkpoint',
     params: {
       op: { type: 'string' },
       slot: { type: 'string', optional: true },
@@ -107,7 +97,6 @@ const DECLARATIONS: readonly Declaration[] = [
     name: 'attack',
     mode: 'async',
     action: true,
-    resume: 'manual',
     params: {
       entityId: { type: 'int', optional: true },
       target: { type: 'string', optional: true },
@@ -118,7 +107,6 @@ const DECLARATIONS: readonly Declaration[] = [
     name: 'inventory',
     mode: 'sync',
     action: true,
-    resume: 'manual',
     params: {
       op: { type: 'string' },
       slot: { type: 'int', optional: true },

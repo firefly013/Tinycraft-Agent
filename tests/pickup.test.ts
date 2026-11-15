@@ -39,7 +39,7 @@ test('pickupDrops：走到掉落物旁并确认实体消失才算捡到', async 
     },
     stop: () => {},
   };
-  const context = { signal: new AbortController().signal, resume: undefined, checkpoint: () => {} };
+  const context = { signal: new AbortController().signal, checkpoint: () => {} };
   const picked = await pickupDrops({ ...b, pathfinder } as never, context, { budgetMs: 1000, waitMs: 100 });
   assert.equal(picked, 1);
   assert.equal(nearbyDrops({ ...b, pathfinder } as never, 8).length, 0);
@@ -49,7 +49,7 @@ test('pickupDrops：pathfinder 永不 resolve 时不会挂死（硬超时）', a
   const items = [{ id: 9, name: 'item', position: { x: 5, y: 64, z: 0 } }];
   const b = bot(items);
   const pathfinder = { goto: () => new Promise<void>(() => {}), stop: () => {} };
-  const context = { signal: new AbortController().signal, resume: undefined, checkpoint: () => {} };
+  const context = { signal: new AbortController().signal, checkpoint: () => {} };
   const started = Date.now();
   const picked = await pickupDrops({ ...b, pathfinder } as never, context, {
     budgetMs: 1_000,

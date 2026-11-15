@@ -111,6 +111,29 @@ test('快照字段：身体/装备/背包/位置/环境/实体/方块/当前动�
   assert.equal(state.goal, '砍三棵树');
 });
 
+test('液体扫描：报告最近的水/岩浆源方块，跳过流动液体', () => {
+  const bot = fakeBot();
+  bot.registry.blocksByName = { water: { id: 9 }, lava: { id: 11 } };
+  const flowing = { name: 'water', position: { x: -50, y: -39, z: 20 }, getProperties: () => ({ level: 3 }) };
+  const source = { name: 'water', position: { x: -50, y: -40, z: 20 }, getProperties: () => ({ level: 0 }) };
+  const lava = { name: 'lava', position: { x: -45, y: -44, z: 22 }, getProperties: () => ({ level: 0 }) };
+  bot.findBlocks = ({ matching }: { matching: number[] }) => {
+    if (matching[0] === 9) return [flowing.position, source.position];
+    if (matching[0] === 11) return [lava.position];
+    return [];
+  };
+  const baseAt = bot.blockAt;
+  bot.blockAt = (pos: { x: number; y: number; z: number }) => {
+    if (pos.x === -50 && pos.z === 20) return pos.y === -39 ? flowing : source;
+    if (pos.x === -45 && pos.z === 22) return lava;
+    return baseAt(pos);
+  };
+  const text = renderSnapshot(snapshotFromBot(bot, null, null));
+  assert.match(text, /寻找液体/);
+  assert.match(text, /水 最近 [\d.]+ 格 \(-50, -40, 20\)/);
+  assert.match(text, /岩浆 最近 [\d.]+ 格 \(-45, -44, 22\)/);
+});
+
 test('渲染：模型能看到的关键行都在', () => {
   const text = renderSnapshot(snapshotFromBot(fakeBot(), '砍三棵树', null));
   assert.match(text, /## 世界快照/);

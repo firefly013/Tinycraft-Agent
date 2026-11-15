@@ -21,10 +21,30 @@ class AsyncBody {
 
   execute(_name: string, _args: Record<string, unknown>, context: ActionContext): Promise<{ text: string }> {
     this.calls += 1;
-    this.resumes.push(context.resume);
     this.context = context;
     // 只报一次进度：被抢占后应该从 {got:1} 继续。
-    if (context.resume === undefined) context.checkpoint({ got: 1 });
+    context.checkpoint({ got: 1 });
+    return this.track(context);
+  }
+
+  canResume(): boolean {
+    return true;
+  }
+
+  async resume(
+    _name: string,
+    _args: Record<string, unknown>,
+    context: ActionContext,
+    checkpoint: unknown,
+  ): Promise<string> {
+    this.calls += 1;
+    this.resumes.push(checkpoint);
+    this.context = context;
+    const result = await this.track(context);
+    return result.text;
+  }
+
+  private track(context: ActionContext): Promise<{ text: string }> {
     return new Promise((resolve, reject) => {
       this.last = { resolve, reject };
       context.signal.addEventListener(
@@ -106,7 +126,7 @@ test('长动作被反射打断：从检查点续做，完成事件叫醒模型�
   baseline.runner.notify(hostile());
   await baseline.runner.settleReflexes();
   assert.equal(body.calls, 2, '被抢占后应重新执行');
-  assert.deepEqual(body.resumes[1], { got: 1 }, '续做要带上检查点');
+  assert.deepEqual(body.resumes[0], { got: 1 }, '续做要带上检查点');
 
   // 长动作完成：结果以 L3 事件回来，模型被叫醒一次。
   faux.setResponses([

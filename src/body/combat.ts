@@ -10,6 +10,8 @@
  * 边界：苦力怕（爆炸是二值事件）、不认识的怪、血太少 —— 一律跑，不赌。
  */
 
+import { createRequire } from 'node:module';
+
 export interface MobProfile {
   hp: number;
   /** 单次伤害。 */
@@ -128,6 +130,34 @@ export interface MobSighting {
   explosive: boolean;
   /** hostile = 会还手；food = 食物动物（不还手）。缺省按 hostile 处理。 */
   kind?: 'hostile' | 'food';
+  /** 目标是否在水里（水里/陆上不在同一层就打不着）。 */
+  inWater?: boolean;
+}
+
+const require = createRequire(import.meta.url);
+const { Vec3 } = require('vec3') as { Vec3: new (x: number, y: number, z: number) => unknown };
+
+/** 水里的生物：鱼、鱿鱼、海豚、守卫者、溺尸等——它们只在同一水层里才打得着。 */
+const AQUATIC_MOBS = new Set([
+  'cod', 'salmon', 'tropical_fish', 'pufferfish', 'squid', 'glow_squid', 'dolphin',
+  'guardian', 'elder_guardian', 'drowned', 'turtle', 'axolotl', 'tadpole',
+]);
+
+/** 生物是不是在水里（名字本身就 aquatic，或者脚下/身体所在格是水）。 */
+export function isInWaterLike(bot: ScanBotLike, position: { x: number; y: number; z: number }, name?: string | null): boolean {
+  if (name != null && AQUATIC_MOBS.has(String(name))) return true;
+  const blockAt = (bot as { blockAt?: (pos: unknown) => { name?: string } | null }).blockAt;
+  if (typeof blockAt !== 'function') return false;
+  for (const y of [position.y + 0.1, position.y + 0.9]) {
+    try {
+      const block = blockAt.call(bot, new Vec3(position.x, y, position.z));
+      const name2 = String(block?.name ?? '');
+      if (name2 === 'water' || name2 === 'flowing_water') return true;
+    } catch {
+      // 读不到就当作不在水里。
+    }
+  }
+  return false;
 }
 
 /** 从 bot 的实体表里扫生物所需的最小接口（假 bot 也能用）。 */
@@ -162,6 +192,7 @@ export function scanTargets(bot: ScanBotLike, radius = 16): MobSighting[] {
       intervalSec: profile.intervalSec,
       explosive: profile.explosive === true,
       kind: profile.food === true ? 'food' : 'hostile',
+      inWater: isInWaterLike(bot, raw.position, raw.name),
     });
   }
   return out.sort((a, b) => a.distance - b.distance);

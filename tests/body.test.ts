@@ -190,7 +190,7 @@ test('快照：背包、附近实体、目标都在', () => {
 
 test('分发：快照走 snapshot()，未知动作给清楚的回执', async () => {
   const { body } = wired();
-  const ctx = { signal: new AbortController().signal, resume: undefined, checkpoint: () => {} };
+  const ctx = { signal: new AbortController().signal, checkpoint: () => {} };
   assert.match(body.snapshot(), /## 世界快照/);
   assert.match((await body.execute('fly', {}, ctx)).text, /身体没有这个动作：fly/);
 });
@@ -267,7 +267,7 @@ test('扫描：有敌人时按战斗力从高到低排进事件', () => {
   assert.doesNotMatch(text, /cow\(0\)/, '食物动物不自动接管身体');
 });
 
-test('扫描：只有食物动物时不接管身体', () => {
+test('扫描：只有食物动物时也接管（狩猎补给）', () => {
   const { raw, body, events } = wired();
   delete raw.bot.entities['7'];
   raw.bot.entities['11'] = { id: 11, name: 'cow', position: makePos(6, 64, 0) };
@@ -276,7 +276,9 @@ test('扫描：只有食物动物时不接管身体', () => {
 
   body.scan();
 
-  assert.equal(events.filter((event) => event.type === 'reflex.engage').length, 0);
+  const engage = events.filter((event) => event.type === 'reflex.engage');
+  assert.equal(engage.length, 1, '同层有食物动物就该打');
+  assert.match(engage[0]?.text ?? '', /cow/);
 });
 
 test('KillAura：见啥打啥，按目标战斗力从高到低，杀完捡掉落', async () => {
@@ -348,7 +350,7 @@ test('战斗开关：combat:false 不扫描、不接管，手动 attack 仍可�
   assert.deepEqual(raw.killed, [], '反射不接管身体');
 
   // 手动攻击不受开关影响。
-  await body.execute('attack', { entityId: 7 }, { signal: new AbortController().signal, resume: undefined, checkpoint: () => {} });
+  await body.execute('attack', { entityId: 7 }, { signal: new AbortController().signal, checkpoint: () => {} });
   assert.deepEqual(raw.killed, ['zombie'], '手动 attack 仍然生效');
 });
 
@@ -427,7 +429,7 @@ test('断线：在飞的动作被拒绝，身体锁不会卡住', async () => {
   const pending = body.execute(
     'mineBlock',
     { x: 1, y: 63, z: 0 },
-    { signal: new AbortController().signal, resume: undefined, checkpoint: () => {} },
+    { signal: new AbortController().signal, checkpoint: () => {} },
   );
   await new Promise((resolve) => setTimeout(resolve, 5));
   raws[0]?.fire('end');
@@ -527,64 +529,3 @@ test('落地水：下坠 + 水桶 → 发 reflex.mlg（L5、静默），落地�
   body.close();
 });
 
-test('溺水：水下数够 tick 才发 reflex.drown（L5、静默），冒头后重置', () => {
-  const { raw, body, events } = wired();
-  events.length = 0;
-  raw.bot.health = 20;
-  raw.bot.entity.position = makePos(0.5, 64, 0.5);
-  raw.bot.entity.velocity = { x: 0, y: 0, z: 0 };
-  raw.bot.entity.isInWater = true;
-  raw.bot.entity.width = 0.6;
-  raw.bot.entity.eyeHeight = 1.62;
-  raw.bot.game.minY = -64;
-  let underwater = true;
-  raw.bot.blockAt = (position: { y: number }) => ({
-    name: underwater && position.y >= 65 && position.y <= 66 ? 'water' : 'air',
-    position,
-    boundingBox: 'empty',
-  });
-
-  for (let i = 0; i < 99; i += 1) raw.fire('physicsTick');
-  const drown = events.filter((event) => event.type === 'reflex.drown');
-  assert.equal(drown.length, 0, '150 tick 之前不喊');
-
-  raw.fire('physicsTick');
-  const after = events.filter((event) => event.type === 'reflex.drown');
-  assert.equal(after.length, 1);
-  assert.equal(after[0]?.level, 5);
-  assert.deepEqual((after[0]?.payload as { reflex: string }).reflex, 'drown');
-  assert.equal(after[0]?.silent, true);
-
-  raw.fire('physicsTick');
-  assert.equal(events.filter((event) => event.type === 'reflex.drown').length, 1, '同一次不重复喊');
-
-  underwater = false; // 冒头
-  raw.fire('physicsTick');
-  underwater = true;
-  raw.fire('physicsTick');
-  assert.equal(events.filter((event) => event.type === 'reflex.drown').length, 1, '冒头后重新计数，不会立刻再喊');
-  body.close();
-});
-
-test('溺水：水下掉血立刻触发（不等 150 tick）', () => {
-  const { raw, body, events } = wired();
-  events.length = 0;
-  raw.bot.health = 20;
-  raw.bot.entity.position = makePos(0.5, 64, 0.5);
-  raw.bot.entity.velocity = { x: 0, y: 0, z: 0 };
-  raw.bot.entity.isInWater = true;
-  raw.bot.entity.width = 0.6;
-  raw.bot.entity.eyeHeight = 1.62;
-  raw.bot.game.minY = -64;
-  raw.bot.blockAt = (position: { y: number }) => ({
-    name: position.y >= 65 && position.y <= 66 ? 'water' : 'air',
-    position,
-    boundingBox: 'empty',
-  });
-
-  raw.fire('physicsTick');
-  raw.bot.health = 17;
-  raw.fire('physicsTick');
-  assert.equal(events.filter((event) => event.type === 'reflex.drown').length, 1, '掉血立刻触发');
-  body.close();
-});

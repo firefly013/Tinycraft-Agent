@@ -44,12 +44,12 @@ export const TOOL_TEXT: Readonly<Record<string, ToolPrompts>> = {
     },
   },
   mineBlock: {
-    description: '挖掉指定坐标的一格方块；会自动从背包里换能收获它的工具。',
+    description: '挖掉指定坐标的一格方块；挖开后会引水/岩浆到身上时默认拒绝。',
     params: {
       x: '方块 x 坐标',
       y: '方块 y 坐标',
       z: '方块 z 坐标',
-      force: '可选；true = 不管有没有掉落都只求挖开（默认要掉落）',
+      force: '可选；true = 强行挖：忽略掉落要求与液体保护（危险）',
     },
   },
   collectBlock: {
@@ -71,8 +71,11 @@ export const TOOL_TEXT: Readonly<Record<string, ToolPrompts>> = {
     },
   },
   placeHere: {
-    description: '把方块放到自己脚下（身体所在格）；服务器可能因为身体占位而拒绝，回执会如实报。',
-    params: { type: '方块 id，比如 dirt、cobblestone' },
+    description: '跳起来在脚下放方块：每跳一次垫高 1 格，最多 8 格。',
+    params: {
+      type: '方块 id，比如 dirt、cobblestone',
+      count: '可选；垫几格，默认 1',
+    },
   },
   container: {
     description: '操作附近容器（存储）：inspect 看内容 / loot 全拿走 / take 拿指定物品 / put 存指定物品。熔炉用 furnace 工具。',

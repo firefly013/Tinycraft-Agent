@@ -28,7 +28,6 @@ test('身体原语与大脑工具分得开', () => {
   assert.equal(bodyTools.length, 11);
   // 长动作必须是 async，查询不许占身体。
   assert.equal(TOOL_BY_NAME.get('collectBlock')?.mode, 'async');
-  assert.equal(TOOL_BY_NAME.get('collectBlock')?.resume, 'checkpoint');
   assert.equal(TOOL_BY_NAME.get('inventory')?.action, true);
   assert.equal(TOOL_BY_NAME.get('mineBlock')?.action, true);
 });

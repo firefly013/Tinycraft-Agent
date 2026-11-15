@@ -12,14 +12,13 @@ import { createRequire } from 'node:module';
 import type { ActionContext, Body } from '../shared/body.ts';
 import type { Kind, Level, LogEvent } from '../core/events.ts';
 import { CHAT_REPEAT_MAX, CHAT_REPEAT_WINDOW_MS, classifyChat } from '../core/chat.ts';
-import { assessCombat, armorPoints, combatPower, mobPower, scanTargets } from './combat.ts';
+import { assessCombat, armorPoints, combatPower, isInWaterLike, mobPower, scanTargets } from './combat.ts';
 import { isFood } from './food.ts';
 import { makePrimitives } from './primitives.ts';
 import { mlgWithWater, needsMlg } from './mlg.ts';
-import { DROWN_TICKS, isHeadUnderwater, swimUp } from './drown.ts';
 import type { MovementProfile, Primitive } from './primitives.ts';
 import { renderSnapshot, snapshotFromBot } from './live_state.ts';
-import { COMBAT_REFLEX, DROWN_REFLEX, EAT_REFLEX, MLG_REFLEX, PICKUP_REFLEX } from './reflexes.ts';
+import { COMBAT_REFLEX, EAT_REFLEX, MLG_REFLEX, PICKUP_REFLEX } from './reflexes.ts';
 import {
   PICKUP_GIVE_UP_MS,
   PICKUP_HARD_MS,
@@ -96,9 +95,9 @@ export interface GameBody extends Body {
   close(): void;
 }
 
-/** 反射内部调原语用的上下文：没有续做、检查点为空。 */
+/** 反射内部调原语用的上下文：没有检查点。 */
 function reflexContext(signal: AbortSignal): ActionContext {
-  return { signal, resume: undefined, checkpoint: () => {} };
+  return { signal, checkpoint: () => {} };
 }
 
 /**
@@ -140,6 +139,13 @@ function createMovements(bot: AnyBot): MovementProfile | null {
       'magma_block', 'cactus', 'sweet_berry_bush', 'wither_rose', 'powder_snow',
       'campfire', 'soul_campfire', 'pointed_dripstone',
     ]) {
+      const block = bot.registry?.blocksByName?.[name];
+      if (block?.id != null) reach.blocksToAvoid.add(block.id);
+    }
+
+    // **水一律不进**：走得进去就出不来（溺水反射每 5 秒顶一下又落回去）。
+    // 过河靠 placeCost + scafoldingBlocks 搭桥；真没桥可搭才会 NoPath，比掉水里好。
+    for (const name of ['water', 'flowing_water']) {
       const block = bot.registry?.blocksByName?.[name];
       if (block?.id != null) reach.blocksToAvoid.add(block.id);
     }
@@ -414,10 +420,13 @@ export function wireBody(bot: AnyBot, options: BodyOptions): GameBody {
         dangerClearScans = 0;
       }
     }
-    // 没有敌对目标就不接管身体：食物动物（水里的鱼、牛猪羊）由模型的 attack 工具显式去打。
-    // 自动追鱼会把模型的动作挤掉十几秒，在深海迁徙时等于卡死。
-    if (hostiles.length === 0) return;
-    const engageable = hostiles;
+    // **只打和自己同一层（水/陆）的目标**：岸上别下水追鱼/溺尸，水里也别去够岸上的怪。
+    // 否则模型走在河边时身体会被抢去追水里的目标，最后被溺水反射接管。
+    const selfInWater = bot.entity?.isInWater === true || isInWaterLike(bot, bot.entity.position, null);
+    const sameSurface = targets.filter((target) => (target.inWater === true) === selfInWater);
+    // 同层里优先打敌人；同层没有敌人时就打同层的食物动物（狩猎补给）。
+    const engageable = hostiles.length > 0 ? sameSurface.filter((target) => target.kind !== 'food') : sameSurface;
+    if (engageable.length === 0) return;
 
     const now = Date.now();
     if (now - lastEngageAt < ENGAGE_COOLDOWN_MS) return;
@@ -519,32 +528,15 @@ export function wireBody(bot: AnyBot, options: BodyOptions): GameBody {
   };
   bot.on('physicsTick', checkFalling);
 
-  /* ── 溺水：水下数 tick；掉血立刻触发。不用 bot.oxygenLevel（这版元数据是坏的） ── */
-  let submergedTicks = 0;
-  let drownSignaled = false;
-  let submergedStartHealth = Number(bot.health ?? 20);
-  const checkDrowning = (): void => {
-    if (bot.entity == null) return;
-    if (!isHeadUnderwater(bot)) {
-      submergedTicks = 0;
-      drownSignaled = false;
-      return;
-    }
-    if (submergedTicks === 0) submergedStartHealth = Number(bot.health ?? 20);
-    submergedTicks += 1;
-    if (drownSignaled) return;
-    const healthDropped = Number(bot.health ?? 20) < submergedStartHealth - 0.5;
-    if (submergedTicks < DROWN_TICKS && !healthDropped) return;
-    drownSignaled = true;
-    emit('reflex.drown', 'World', 5, '在水下待太久：往上浮', { reflex: DROWN_REFLEX }, true);
-  };
-  bot.on('physicsTick', checkDrowning);
-
   const runKillAura = async (context: ActionContext): Promise<void> => {
     // KillAura：见啥打啥，按目标战斗力从高到低；每杀一只顺手捡掉落。
     const deadline = Date.now() + KILLAURA_MAX_MS;
+    const selfInWaterNow = (): boolean =>
+      bot.entity?.isInWater === true || isInWaterLike(bot, bot.entity.position, null);
     while (!context.signal.aborted && Date.now() < deadline) {
-      const targets = scanTargets(bot, 16);
+      // 每轮重新算一次水层：追到水边就别继续追水里的目标。
+      const wet = selfInWaterNow();
+      const targets = scanTargets(bot, 16).filter((target) => (target.inWater === true) === wet);
       if (targets.length === 0) {
         await pickupDrops(bot, context, { radius: 12, budgetMs: DROP_PICKUP_MS });
         return;
@@ -567,15 +559,6 @@ export function wireBody(bot: AnyBot, options: BodyOptions): GameBody {
 
   const reflex = async (name: string, signal: AbortSignal): Promise<void> => {
     const context = reflexContext(signal);
-    if (name === DROWN_REFLEX) {
-      try {
-        await swimUp(bot, signal);
-      } finally {
-        drownSignaled = false;
-        submergedTicks = 0;
-      }
-      return;
-    }
     if (name === MLG_REFLEX) {
       try {
         await mlgWithWater(bot, signal);
@@ -643,6 +626,14 @@ export function wireBody(bot: AnyBot, options: BodyOptions): GameBody {
       const stop = primitive?.stop;
       if (typeof stop !== 'function') return '';
       return stop.call(primitive, context, checkpoint);
+    },
+    // 续做：只有登记了 resume 钩子的动作可续（没登记 = 抢占后不续）。
+    canResume: (name) => typeof primitives[name]?.resume === 'function',
+    resume: async (name, args, context, checkpoint) => {
+      const primitive = primitives[name];
+      const resume = primitive?.resume;
+      if (typeof resume !== 'function') return `没有为 ${name} 登记续做钩子`;
+      return resume.call(primitive, args, context, checkpoint);
     },
     snapshot,
     visionState: () => visionState,

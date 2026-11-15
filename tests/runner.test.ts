@@ -9,10 +9,10 @@ import type { ReflexSpec } from '../src/core/reflex.ts';
 import type { ToolDeclaration } from '../src/shared/tools.ts';
 
 const TOOLS: readonly ToolDeclaration[] = [
-  { name: 'mineBlock', description: '挖一格', mode: 'async', action: true, resume: 'manual', params: { x: { type: 'int' }, y: { type: 'int' }, z: { type: 'int' } } },
-  { name: 'collectBlock', description: '收矿', mode: 'async', action: true, resume: 'checkpoint', params: { type: { type: 'string' } } },
-  { name: 'goTo', description: '走过去', mode: 'async', action: true, resume: 'auto', params: { x: { type: 'int' }, y: { type: 'int' }, z: { type: 'int' } } },
-  { name: 'attack', description: '打实体', mode: 'async', action: true, resume: 'manual', params: { entityId: { type: 'int' } } },
+  { name: 'mineBlock', description: '挖一格', mode: 'async', action: true, params: { x: { type: 'int' }, y: { type: 'int' }, z: { type: 'int' } } },
+  { name: 'collectBlock', description: '收矿', mode: 'async', action: true, params: { type: { type: 'string' } } },
+  { name: 'goTo', description: '走过去', mode: 'async', action: true, params: { x: { type: 'int' }, y: { type: 'int' }, z: { type: 'int' } } },
+  { name: 'attack', description: '打实体', mode: 'async', action: true, params: { entityId: { type: 'int' } } },
 ];
 
 const COMBAT: ReflexSpec = { name: 'combat', priority: 30, interruptible: true, types: ['hostile'] };
@@ -21,8 +21,10 @@ const FALL: ReflexSpec = { name: 'landing_water', priority: 100, interruptible: 
 const event = (type: string, level: 2 | 3 | 4 | 5 = 5): LogEvent => ({ type, kind: 'World', level, payload: {}, text: type, ts: 0 });
 
 class FakeBody implements Body {
-  calls: Array<{ name: string; args: Record<string, unknown>; resume: unknown }> = [];
+  calls: Array<{ name: string; args: Record<string, unknown>; checkpoint: unknown }> = [];
   cancels = 0;
+  /** 哪些动作登记了续做钩子（真实身体里是原语上的 resume 函数）。 */
+  resumable = new Set<string>(['collectBlock', 'goTo', 'smelt', 'attack']);
   /** 有序停机的清理钩子被调用的记录。 */
   stopCalls: Array<{ name: string; checkpoint: unknown }> = [];
   stopText = '';
@@ -34,8 +36,27 @@ class FakeBody implements Body {
     return this.stopText;
   }
 
-  execute(name: string, args: Record<string, unknown>, context: ActionContext): Promise<{ text: string }> {
-    this.calls.push({ name, args, resume: context.resume });
+  canResume(name: string): boolean {
+    return this.resumable.has(name);
+  }
+
+  async resume(
+    name: string,
+    args: Record<string, unknown>,
+    context: ActionContext,
+    checkpoint: unknown,
+  ): Promise<string> {
+    const result = await this.execute(name, args, context, checkpoint);
+    return result.text;
+  }
+
+  execute(
+    name: string,
+    args: Record<string, unknown>,
+    context: ActionContext,
+    checkpoint?: unknown,
+  ): Promise<{ text: string }> {
+    this.calls.push({ name, args, checkpoint });
     this.context = context;
     return new Promise((resolve, reject) => {
       this.pending = { resolve, reject };
@@ -244,7 +265,7 @@ test('checkpoint 策略：被抢占后从上报的进度续做，最终只报一
   h.runner.notify(event('hostile'));
   await waitFor(() => h.body.calls.length === 2);
   assert.equal(h.body.cancels, 1);
-  assert.deepEqual(h.body.calls[1]?.resume, { got: 3 }, '续做要带上检查点');
+  assert.deepEqual(h.body.calls[1]?.checkpoint, { got: 3 }, '续做要带上检查点');
 
   h.body.finish('收了 8 个铁');
   await waitFor(() => h.submits.length === 1);
@@ -258,7 +279,7 @@ test('auto 策略：被抢占后重新开始，回执不撒谎', async () => {
   await h.runner.toolText('goTo', { x: 1, y: 2, z: 3 });
   h.runner.notify(event('hostile'));
   await waitFor(() => h.body.calls.length === 2);
-  assert.equal(h.body.calls[1]?.resume, undefined);
+  assert.equal(h.body.calls[1]?.checkpoint, undefined);
   h.body.finish('走到了');
   await waitFor(() => h.submits.length === 1);
   assert.match(h.submits[0] ?? '', /走到了/);
@@ -311,7 +332,7 @@ test('Stop：打断动作，不产生完成事件', async () => {
 test('Stop 是有序停机：先等动作收手，再跑清理钩子，回执里带结果', async () => {
   const declarations: readonly ToolDeclaration[] = [
     ...TOOLS,
-    { name: 'smelt', description: '', mode: 'async', action: true, resume: 'checkpoint', params: { item: { type: 'string' } } },
+    { name: 'smelt', description: '', mode: 'async', action: true, params: { item: { type: 'string' } } },
   ];
   const h = harness({ tools: declarations });
   h.body.stopText = '熔炉已清空（取回 iron_ingot×3、coal×7）';
@@ -337,7 +358,7 @@ test('被反射抢占不是 stop：不跑清理钩子，检查点留给续做', 
   h.runner.notify(event('hostile'));
   await waitFor(() => h.body.calls.length === 2);
   assert.deepEqual(h.body.stopCalls, [], '抢占只存检查点，不清现场');
-  assert.deepEqual(h.body.calls[1]?.resume, { furnace: { x: 1, y: 64, z: 0 } });
+  assert.deepEqual(h.body.calls[1]?.checkpoint, { furnace: { x: 1, y: 64, z: 0 } });
 });
 
 test('manual 策略：被抢占后不续做，给一条明确的完成事件', async () => {
@@ -382,7 +403,7 @@ test('断线：在飞动作被中止，锁释放，后续动作能继续', async
 });
 
 test('KillAura 抢占模型攻击：取消 → 反射收手 → 按原参数续做', async () => {
-  const h = harness({ tools: [{ ...TOOLS[3]!, resume: 'auto' }] });
+  const h = harness({ tools: [{ ...TOOLS[3]! }] });
   await h.runner.toolText('attack', { entityId: 7 });
   assert.deepEqual(h.body.calls[0]?.args, { entityId: 7 });
 
@@ -390,7 +411,7 @@ test('KillAura 抢占模型攻击：取消 → 反射收手 → 按原参数续�
   await waitFor(() => h.body.calls.length === 2);
   assert.equal(h.body.cancels, 1, '模型攻击要被取消');
   assert.deepEqual(h.body.calls[1]?.args, { entityId: 7 }, '续做沿用原参数');
-  assert.equal(h.body.calls[1]?.resume, undefined, 'auto 策略不带检查点');
+  assert.equal(h.body.calls[1]?.checkpoint, undefined, '没写检查点时续做不带数据');
 
   h.body.finish('打死了僵尸');
   await waitFor(() => h.submits.length === 1);

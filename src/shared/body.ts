@@ -10,8 +10,6 @@
  */
 export interface ActionContext {
   readonly signal: AbortSignal;
-  /** 上次被打断时存的检查点；第一次执行是 undefined。 */
-  readonly resume: unknown;
   /** 执行中上报进度（只对数得清的工具有效，比如"已经收了几个"）。 */
   checkpoint(value: unknown): void;
 }
@@ -26,6 +24,19 @@ export interface Body {
    * 调用方保证：清理期间身体锁还在这条动作身上，且有自己的超时信号。
    */
   stop?(name: string, context: ActionContext, checkpoint: unknown): Promise<string>;
+  /** 这条动作有没有登记续做钩子；Runner 据此决定被抢占后是否存 pendingResume。 */
+  canResume?(name: string): boolean;
+  /**
+   * **续做钩子**：从检查点继续执行这条动作（和 `stop` 对称）。
+   *
+   * 没登记 `resume` = 不可续做；登记了就会被自动调用，`checkpoint` 是抢占时存下的值。
+   */
+  resume?(
+    name: string,
+    args: Record<string, unknown>,
+    context: ActionContext,
+    checkpoint: unknown,
+  ): Promise<string>;
 }
 
 /**

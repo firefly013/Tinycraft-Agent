@@ -24,8 +24,7 @@ export interface ToolOutcome {
   terminate?: boolean;
 }
 
-/** 动作被抢占后怎么续：auto 重新开始 / checkpoint 从上报的进度续 / manual 不续。 */
-export type ResumePolicy = 'auto' | 'checkpoint' | 'manual';
+/** 续做方式由身体侧登记 `resume` 钩子决定，声明里不再写策略。 */
 
 export interface ToolParam {
   type: 'string' | 'int' | 'float' | 'boolean';
@@ -40,8 +39,6 @@ export interface ToolDeclaration {
   /** 动作类要占身体通道；查询类不占。 */
   action: boolean;
   params?: Record<string, ToolParam>;
-  /** 被抢占后怎么续。缺省 auto。 */
-  resume?: ResumePolicy;
 }
 
 export interface ValidationIssue {

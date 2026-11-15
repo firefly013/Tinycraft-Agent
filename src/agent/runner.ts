@@ -14,7 +14,7 @@
  *   → 身体从断点继续 → 最终只报一条完成事件，附被打断次数。
  */
 import { describe as describeControl, initialState, reduce as reduceControl } from '../core/control.ts';
-import type { ControlState, Effect, Input } from '../core/control.ts';
+import type { ControlState, Effect, Input, ResumePolicy } from '../core/control.ts';
 import { EventIntake } from '../core/intake.ts';
 import type { IntakeDeps } from '../core/intake.ts';
 import { selectReflex } from '../core/reflex.ts';
@@ -24,7 +24,7 @@ import type { TraceNote } from '../core/trace.ts';
 import type { LogEvent } from '../core/events.ts';
 import type { ActionContext, Body } from '../shared/body.ts';
 import { checkArgs } from '../shared/tools.ts';
-import type { ResumePolicy, ToolDeclaration, ToolOutcome } from '../shared/tools.ts';
+import type { ToolDeclaration, ToolOutcome } from '../shared/tools.ts';
 
 export type { ActionContext, Body } from '../shared/body.ts';
 
@@ -90,6 +90,8 @@ interface ActiveCall {
   settled: Promise<void>;
   /** 续做时给身体的检查点。 */
   resumeFrom: unknown;
+  /** 这次执行是不是"续做"（走 body.resume 而不是 body.execute）。 */
+  resuming: boolean;
   /** 本次执行是否被硬超时中止。 */
   timedOut: boolean;
   hardTimer: NodeJS.Timeout | null;
@@ -175,12 +177,13 @@ export class Runner {
       };
     }
 
+    // 续做能力由身体侧登记（有 resume 钩子才可续）；没有就等同于原来的 manual。
+    const resumable = this.body.canResume?.(name) === true;
     const claim = {
       kind: 'claim-model' as const,
       tool: name,
       args: checked.args,
-      // 没显式声明续做策略的动作默认 manual：有副作用的动作不自动重放。
-      policy: declaration.resume ?? 'manual',
+      policy: resumable ? ('checkpoint' as const) : ('manual' as const),
     };
     const reduction = this.reduce(claim);
     if (reduction.outcome !== 'applied') {
@@ -201,7 +204,7 @@ export class Runner {
       args: checked.args,
       callId: `${name}#${++this.callSeq}`,
       epoch: this.state.epoch,
-      policy: declaration.resume ?? 'manual',
+      policy: resumable ? 'checkpoint' : 'manual',
       attempt: 0,
       interrupted: false,
       interrupts: 0,
@@ -210,6 +213,7 @@ export class Runner {
       controller: new AbortController(),
       settled: Promise.resolve(),
       resumeFrom: undefined,
+      resuming: false,
       timedOut: false,
       hardTimer: null,
     };
@@ -313,7 +317,7 @@ export class Runner {
       const text = await stop.call(
         this.body,
         call.tool,
-        { signal: controller.signal, resume: undefined, checkpoint: () => {} },
+        { signal: controller.signal, checkpoint: () => {} },
         checkpoint,
       );
       if (!controller.signal.aborted) return typeof text === 'string' ? text : '';
@@ -402,7 +406,6 @@ export class Runner {
   private context(call: ActiveCall, attempt: number): ActionContext {
     return {
       signal: call.controller.signal,
-      resume: call.resumeFrom,
       checkpoint: (value: unknown) => {
         // 过期执行的进度不能写进新一轮：attempt 也必须是当前这次。
         if (this.active !== call || call.attempt !== attempt) return;
@@ -436,6 +439,7 @@ export class Runner {
   private resumeActive(args: unknown, checkpoint: unknown): void {
     const call = this.active;
     if (call == null) return;
+    call.resuming = true;
     call.interrupted = false;
     if (args != null && typeof args === 'object') call.args = args as Record<string, unknown>;
     call.resumeFrom = checkpoint;
@@ -469,7 +473,17 @@ export class Runner {
     const attempt = ++call.attempt;
     this.armHardTimer(call, call.controller);
     try {
-      const result = await this.body.execute(call.tool, call.args, this.context(call, attempt));
+      const result =
+        call.resuming && typeof this.body.resume === 'function'
+          ? {
+              text: await this.body.resume(
+                call.tool,
+                call.args,
+                this.context(call, attempt),
+                call.resumeFrom,
+              ),
+            }
+          : await this.body.execute(call.tool, call.args, this.context(call, attempt));
       if (call.interrupted || call.attempt !== attempt) return null;
       return this.finish(call, result.text);
     } catch (error: unknown) {

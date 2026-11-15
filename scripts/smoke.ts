@@ -27,8 +27,7 @@ const pending: Array<{ resolve: (value: { text: string }) => void; reject: (erro
 const body = {
   execute: (name: string, args: Record<string, unknown>, context: ActionContext): Promise<{ text: string }> => {
     attempts += 1;
-    const from = context.resume === undefined ? '无（第一次）' : JSON.stringify(context.resume);
-    console.log(`   身体开始干（第 ${attempts} 次）：${name} ${JSON.stringify(args)}，续做参数 ${from}`);
+    console.log(`   身体开始干（第 ${attempts} 次）：${name} ${JSON.stringify(args)}`);
     // 第一次执行到第 3 个时报一次进度——被抢占后会被存下来。
     if (attempts === 1) context.checkpoint({ got: 3 });
     return new Promise((resolve, reject) => {
@@ -43,6 +42,12 @@ const body = {
         { once: true },
       );
     });
+  },
+  canResume: (name: string): boolean => name === 'collectBlock',
+  resume: async (name: string, args: Record<string, unknown>, context: ActionContext, checkpoint: unknown): Promise<string> => {
+    console.log(`   身体续做：${name}，检查点 ${JSON.stringify(checkpoint)}`);
+    const result = await body.execute(name, args, context);
+    return result.text;
   },
 };
 

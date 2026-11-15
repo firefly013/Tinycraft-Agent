@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { MOB_PROFILES, armorPoints, assessCombat, combatPower, mobPower, scanTargets } from '../src/body/combat.ts';
+import { MOB_PROFILES, armorPoints, assessCombat, combatPower, isInWaterLike, mobPower, scanTargets } from '../src/body/combat.ts';
 import type { MobSighting } from '../src/body/combat.ts';
 
 function mob(name: string, overrides: Partial<MobSighting> = {}): MobSighting {
@@ -155,4 +155,25 @@ test('扫描：只报会主动打我的怪，排除自己与太远的', () => {
   assert.deepEqual(hostiles.map((target) => target.name), ['zombie']);
   assert.equal(hostiles[0]?.id, 2);
   assert.equal(hostiles[0]?.distance, 3);
+});
+
+test('水里/陆上：扫描结果带 inWater', () => {
+  const waterAt = new Set(['2,64,0']);
+  const bot: any = {
+    entity: { id: 1, position: { x: 0, y: 64, z: 0 } },
+    entities: {
+      '1': { id: 1, name: 'Bot', position: { x: 0, y: 64, z: 0 } },
+      '2': { id: 2, name: 'cod', position: { x: 2, y: 64, z: 0 } },
+      '3': { id: 3, name: 'zombie', position: { x: 3, y: 64, z: 0 } },
+    },
+    registry: { entitiesByName: {} },
+    blockAt: (pos: any) => ({ name: waterAt.has([pos.x, pos.y, pos.z].map((v: number) => Math.floor(v)).join(',')) ? 'water' : 'air' }),
+  };
+  const found = scanTargets(bot, 16);
+  const cod = found.find((entry) => entry.name === 'cod');
+  const zombie = found.find((entry) => entry.name === 'zombie');
+  assert.equal(cod?.inWater, true, '鱼在水里');
+  assert.equal(zombie?.inWater, false, '僵尸在岸上');
+  assert.equal(isInWaterLike(bot, { x: 9, y: 64, z: 9 }, 'salmon'), true, '水生生物名字直接算水里');
+  assert.equal(isInWaterLike(bot, { x: 3, y: 64, z: 0 }, null), false);
 });
