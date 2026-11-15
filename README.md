@@ -13,7 +13,6 @@
 <img alt="Last commit" src="https://img.shields.io/github/last-commit/firefly013/Tinycraft-Agent?style=flat-square">
 <img alt="Node" src="https://img.shields.io/badge/node-%E2%89%A522.18-339933?style=flat-square&logo=node.js&logoColor=white">
 <img alt="Minecraft" src="https://img.shields.io/badge/minecraft-1.21.4-62B47A?style=flat-square">
-<img alt="Tests" src="https://img.shields.io/badge/tests-227%20passing-brightgreen?style=flat-square">
 
 </div>
 
@@ -246,7 +245,7 @@ tests/            测试（node --test 直接跑 TypeScript）
 ## 测试
 
 ```bash
-npm run check   # tsc --noEmit + node --test（227 个测试）
+npm run check   # tsc --noEmit + node --test
 npm run smoke   # 连接真实服务器跑一轮，验证端到端
 ```
 
