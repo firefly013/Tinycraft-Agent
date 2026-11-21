@@ -233,10 +233,10 @@ npm run smoke   # 连接真实服务器跑一轮，验证端到端
 
 **加一个工具**（四步，缺一不可）：
 
-1. `src/shared/tools.ts` 写声明与参数 schema；
-2. `src/body/catalog.ts` 注册工具名与参数；
-3. `src/body/primitives.ts` 实现原语（需要续做就加 `resume`，需要收尾就加 `stop`）；
-4. `src/prompts.ts` 写模型能读懂的说明，再补测试。
+1. `src/body/catalog.ts` 声明工具名、是否占身体、参数类型；
+2. `src/body/primitives.ts` 实现原语（键名即工具名；需要续做加 `resume`，需要收尾加 `stop`）；
+3. `src/prompts.ts` 写模型能读懂的说明；
+4. `tests/` 补一个正常路径和一个拒绝路径。
 
 **加一个供应商**：在 `providers/` 放一个 JSON，指向 pi-ai 的模块与 factory，然后在 `bot.json` 里改 `provider`。
 
