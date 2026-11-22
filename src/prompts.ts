@@ -166,13 +166,13 @@ export const TOOL_TEXT: Readonly<Record<string, ToolPrompts>> = {
     },
   },
   BuildAt: {
-    description: '把蓝图建到指定原点，原点对应蓝图最小角。默认真实逐块放置；mode=command 用服务器命令（需要 op）。',
+    description: '把蓝图建到指定原点，原点对应蓝图最小角。有 op 自动用服务器命令（快），没 op 逐块放置；mode 可强制。',
     params: {
       blueprint: '蓝图 id',
       x: '原点 x',
       y: '原点 y',
       z: '原点 z',
-      mode: '可选；place（默认，玩家式逐块）或 command（/fill，需要 op）',
+      mode: '可选；command（/fill，需 op）或 place（逐块）；不给就按权限自动选',
       clearAir: '可选；仅 command 模式，空气也写（清场）',
     },
   },

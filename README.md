@@ -124,7 +124,7 @@ interface ControlState {
 |---|---|
 | `DesignBuild` | 派一个子模型设计建筑：写脚本、编译、自检，产出蓝图目录 |
 | `ReworkDesign` | 在已有蓝图上改，不新开一份 |
-| `BuildAt` | 把蓝图建到指定原点；默认真实逐块放置，`mode=command` 用 `/fill`（需要 op） |
+| `BuildAt` | 把蓝图建到指定原点；有 op 自动用 `/fill`，没 op 逐块放置，`mode` 可强制 |
 | `UndoBuild` | 按施工前的现场快照还原 |
 | `ListBlueprints` | 列出蓝图（含可复用标记） |
 | `CancelDesign` | 取消一个后台设计任务，不影响身体 |

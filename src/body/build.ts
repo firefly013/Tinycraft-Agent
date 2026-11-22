@@ -26,6 +26,37 @@ import type { Primitive } from './primitives.ts';
 const require = createRequire(import.meta.url);
 const { Vec3 } = require('vec3') as { Vec3: new (x: number, y: number, z: number) => unknown };
 
+/**
+ * 探测 op：`/seed` 是权限等级 2 的命令。
+ * 回执是 `Seed: …` 说明有权限；`You do not have permission` 说明没有；
+ * 超时按“没有”处理——退回逐块放置是安全的。
+ */
+export function probeOp(bot: AnyBot, timeoutMs = 2000): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    let timer: NodeJS.Timeout | null = null;
+    const finish = (value: boolean): void => {
+      if (settled) return;
+      settled = true;
+      if (timer != null) clearTimeout(timer);
+      bot.removeListener?.('message', on);
+      resolve(value);
+    };
+    const on = (raw: unknown): void => {
+      const text = String((raw as { toString?: () => string })?.toString?.() ?? raw);
+      if (/^Seed: /.test(text)) finish(true);
+      else if (/permission/i.test(text)) finish(false);
+    };
+    bot.on('message', on);
+    timer = setTimeout(() => finish(false), timeoutMs);
+    try {
+      bot.chat('/seed');
+    } catch {
+      finish(false);
+    }
+  });
+}
+
 /** 命令被服务器拒绝时的回执前缀（原版 1.21.4 实测措辞）。 */
 const COMMAND_ERRORS = [
   'You do not have permission',
@@ -171,7 +202,7 @@ async function runCommandPlan(
     }
     // 命令是异步执行的：等一拍再抽查，否则读到的是上一帧的区块。
     await sleep(200);
-    return `施工完成：${describePlan(plan)}，共 ${batches.length} 批；${verifySample(bot, plan)}`;
+    return `施工完成：${describePlan(plan)}，共 ${batches.length} 批；${verifySample(bot, plan)}（命令模式）`;
   } finally {
     for (const command of unforceloadCommands(plan)) {
       try {
@@ -301,13 +332,20 @@ async function runPlacePlan(
     }
   }
 
-  const head = `施工完成：计划 ${steps.length} 步，放置 ${placed}，跳过 ${skipped}`;
+  const head = `施工完成：计划 ${steps.length} 步，放置 ${placed}，跳过 ${skipped}（逐块放置）`;
   return details.length === 0 ? head : `${head}\n跳过明细：\n${details.join('\n')}`;
 }
 
 /** 建造原语。 */
 export function createBuildPrimitives(bot: AnyBot, deps: BuildDeps): Record<string, Primitive> {
   const ops = deps.placeOps ?? createPlaceBot(bot);
+  /** 探测一次、记住结果；重连会重建原语，所以不会带着旧权限跑。 */
+  let opState: boolean | null = null;
+  const hasOp = async (): Promise<boolean> => {
+    if (typeof bot?.chat !== 'function' || typeof bot?.on !== 'function') return false;
+    if (opState == null) opState = await probeOp(bot);
+    return opState;
+  };
 
   const execute = async (args: Record<string, unknown>, context: ActionContext, start: number): Promise<string> => {
     const version = deps.mc();
@@ -321,9 +359,9 @@ export function createBuildPrimitives(bot: AnyBot, deps: BuildDeps): Record<stri
     const z = Number(args.z);
     if (![x, y, z].every(Number.isInteger)) throw new Error('x/y/z 必须是整数');
 
-    const mode = args.mode === 'command' ? 'command' : 'place';
-    const clearAir = mode === 'command' && args.clearAir === true;
-    const plan = await emitPlan(deps, id, { x, y, z }, clearAir);
+    const requested = args.mode === 'command' ? 'command' : args.mode === 'place' ? 'place' : null;
+    const mode = requested ?? ((await hasOp()) ? 'command' : 'place');
+    const plan = await emitPlan(deps, id, { x, y, z }, mode === 'command' && args.clearAir === true);
 
     const dir = join(deps.blueprintsRoot, id);
     resetUndo(dir, mode);

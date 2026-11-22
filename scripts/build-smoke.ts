@@ -98,7 +98,13 @@ const at = (x: number, y: number, z: number): string => {
 const before = at(origin[0], origin[1], origin[2]);
 
 const placed = await primitives.BuildAt(
-  { blueprint: blueprint.id, x: origin[0], y: origin[1], z: origin[2], mode: 'command' },
+  {
+    blueprint: blueprint.id,
+    x: origin[0],
+    y: origin[1],
+    z: origin[2],
+    ...(env.SMOKE_MODE == null ? {} : { mode: env.SMOKE_MODE }),
+  },
   context,
 );
 console.log(placed);
@@ -125,7 +131,7 @@ if (env.SMOKE_PLACE === '1') {
   const tiny = await mcBuild.build('script.js', 'plan.schem', { mc: version, cwd: one.dir });
   if (!tiny.ok) fail(`单块蓝图编译失败：${tiny.stderr.slice(0, 300)}`);
   const placedByHand = await primitives.BuildAt(
-    { blueprint: one.id, x: target[0], y: target[1], z: target[2] },
+    { blueprint: one.id, x: target[0], y: target[1], z: target[2], mode: 'place' },
     context,
   );
   console.log(placedByHand);
