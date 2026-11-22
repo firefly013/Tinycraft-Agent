@@ -139,4 +139,47 @@ export const TOOL_TEXT: Readonly<Record<string, ToolPrompts>> = {
       goal: '新的目标，一句话说清',
     },
   },
+  DesignBuild: {
+    description: '派子模型设计建筑：它自己写脚本、编译、自检，产出蓝图；立刻返回任务 id，完成会用事件叫你。',
+    params: {
+      brief: '要建什么：尺寸、风格、材料、用途',
+      tags: '可选；逗号分隔的标签，方便以后检索复用',
+    },
+  },
+  ReworkDesign: {
+    description: '让子模型在已有蓝图上修改，不新开一份。',
+    params: {
+      blueprint: '蓝图 id',
+      notes: '要改什么',
+    },
+  },
+  CancelDesign: {
+    description: '取消一个正在跑的设计任务；不影响身体动作。',
+    params: {
+      task: 'DesignBuild 返回的任务 id',
+    },
+  },
+  ListBlueprints: {
+    description: '列出蓝图：id、尺寸、格数、标签、是否可复用。',
+    params: {
+      query: '可选；按 id/brief/tag 文本过滤',
+    },
+  },
+  BuildAt: {
+    description: '把蓝图建到指定原点，原点对应蓝图最小角。默认真实逐块放置；mode=command 用服务器命令（需要 op）。',
+    params: {
+      blueprint: '蓝图 id',
+      x: '原点 x',
+      y: '原点 y',
+      z: '原点 z',
+      mode: '可选；place（默认，玩家式逐块）或 command（/fill，需要 op）',
+      clearAir: '可选；仅 command 模式，空气也写（清场）',
+    },
+  },
+  UndoBuild: {
+    description: '按施工前的快照把这块区域还原。',
+    params: {
+      blueprint: '要还原的蓝图 id',
+    },
+  },
 };

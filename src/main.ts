@@ -21,9 +21,14 @@ import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite
 import { INIT_MESSAGE, SYSTEM_PROMPT } from './prompts.ts';
 import { startAdmin } from './agent/admin.ts';
 import type { AdminServer } from './agent/admin.ts';
+import { createArchitecture } from './agent/architect.ts';
+import type { Architecture } from './agent/architect.ts';
+import { describeBlueprint, listBlueprints } from './agent/blueprints.ts';
+import { createDesignSession } from './agent/design_session.ts';
 import { createTokenBudget, DEFAULT_TOKEN_BUDGET } from './agent/budget.ts';
 import { startBaseline } from './agent/bot.ts';
-import type { Baseline } from './agent/bot.ts';
+import type { Baseline, BuildingBridge } from './agent/bot.ts';
+import { createMcBuild } from './body/mcbuild.ts';
 import {
   applyDotEnv,
   loadBot,
@@ -200,6 +205,77 @@ const inbox: LogEvent[] = [];
 let notify: ((event: LogEvent) => void) | null = null;
 // 控制面在 baseline 之后才有；快照的 currentAction 用闭包延后取。
 let runnerRef: Runner | null = null;
+
+// 建筑：只在配置了 mc-build 时启用；否则这 6 个工具整组不给模型。
+const buildConfig = bot.config.build;
+const mcBuildDir = env.MC_BUILD_DIR ?? buildConfig?.mcBuildDir;
+let buildVersion: string | null = version ?? null;
+let architecture: Architecture | null = null;
+let blueprintsRoot: string | null = null;
+let mcBuild: ReturnType<typeof createMcBuild> | null = null;
+if (mcBuildDir != null && mcBuildDir !== '') {
+  blueprintsRoot = resolve(`./${bot.dir}`, 'build', 'blueprints');
+  mkdirSync(blueprintsRoot, { recursive: true });
+  mcBuild = createMcBuild({ dir: resolve(mcBuildDir) });
+  const architectProviderId = buildConfig?.architect?.provider ?? providerId;
+  const architectModelId = buildConfig?.architect?.model ?? modelId;
+  const architectModels =
+    architectProviderId === providerId
+      ? models
+      : (await openProvider(loadProvider(configRoot, architectProviderId), architectProviderId, configRoot)).models;
+  architecture = createArchitecture({
+    blueprintsRoot,
+    mc: () => buildVersion,
+    createSession: () =>
+      createDesignSession({
+        models: architectModels,
+        model: { provider: architectProviderId, modelId: architectModelId },
+        thinkingLevel,
+        blueprintsRoot: blueprintsRoot as string,
+        mcBuild: mcBuild as ReturnType<typeof createMcBuild>,
+        mc: () => buildVersion,
+      }),
+    onEvent: (event) => {
+      runnerRef?.notify({
+        type: `design.${event.kind}`,
+        kind: 'Model',
+        level: 3,
+        payload: { taskId: event.taskId, blueprintId: event.blueprintId },
+        text: event.text,
+        ts: Date.now(),
+      });
+    },
+  });
+}
+
+const building: BuildingBridge | null =
+  architecture == null || blueprintsRoot == null
+    ? null
+    : {
+        design: (brief, tags) => {
+          const task = architecture!.start(brief, tags == null ? undefined : [tags]);
+          return `accepted：设计任务 ${task.taskId}（蓝图 ${task.blueprintId}）已开始；完成后会用事件叫你。`;
+        },
+        rework: (blueprintId, notes) => {
+          try {
+            const task = architecture!.rework(blueprintId, notes);
+            return `accepted：返工任务 ${task.taskId} 已开始；完成后会用事件叫你。`;
+          } catch (error: unknown) {
+            return `返工没开始：${error instanceof Error ? error.message : String(error)}`;
+          }
+        },
+        cancel: (taskId) => architecture!.cancel(taskId),
+        list: (query) => {
+          const found = listBlueprints(blueprintsRoot!, query == null ? {} : { text: query });
+          const lines = found.slice(0, 30).map(describeBlueprint);
+          const running = architecture!.list().filter((task) => task.state === 'running');
+          if (running.length > 0) {
+            lines.push(`进行中：${running.map((task) => `${task.taskId}（${(task.elapsedMs / 1000).toFixed(0)}s）`).join('、')}`);
+          }
+          return lines.length === 0 ? '（还没有蓝图）' : lines.join('\n');
+        },
+      };
+
 const body = createBody({
   host,
   port,
@@ -212,6 +288,9 @@ const body = createBody({
   vision,
   combat,
   ...(snapshotSections == null ? {} : { snapshotSections }),
+  ...(blueprintsRoot == null || mcBuild == null
+    ? {}
+    : { build: { blueprintsRoot, mcBuild, mcVersion: buildVersion } }),
   onEvent: (event) => {
     if (notify == null) inbox.push(event);
     else notify(event);
@@ -237,6 +316,7 @@ const baseline: Baseline = await startBaseline({
   systemPrompt: prompt,
   goal,
   reflexes: REFLEXES,
+  ...(building == null ? {} : { building }),
   ...(toolSubset.length === 0 ? {} : { tools: toolSubset }),
   ...(maxToolOutputChars == null ? {} : { maxToolOutputChars }),
   compaction,
@@ -295,6 +375,11 @@ async function waitSpawn(timeoutMs: number): Promise<void> {
 }
 
 await waitSpawn(30_000);
+// 握手之后才知道服务器版本；建筑编译要用它。
+{
+  const raw = body.raw() as { version?: unknown } | null;
+  if (typeof raw?.version === 'string' && raw.version !== '') buildVersion = raw.version;
+}
 let kickoff = initMessage;
 await baseline.kick(kickoff);
 console.log(

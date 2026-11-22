@@ -10,7 +10,7 @@ import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite
 import { createModels } from '@earendil-works/pi-ai/models';
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import { splitChatText, startBaseline, withToolChoice } from '../src/agent/bot.ts';
-import type { Baseline } from '../src/agent/bot.ts';
+import type { Baseline, BuildingBridge } from '../src/agent/bot.ts';
 
 class FakeBody {
   calls: Array<{ name: string; args: Record<string, unknown> }> = [];
@@ -32,7 +32,7 @@ class FakeBody {
   cancel(): void {}
 }
 
-async function setup(storage: Storage = new MemoryStorage()): Promise<{
+async function setup(storage: Storage = new MemoryStorage(), building?: BuildingBridge): Promise<{
   faux: ReturnType<typeof fauxProvider>;
   body: FakeBody;
   said: string[];
@@ -54,6 +54,7 @@ async function setup(storage: Storage = new MemoryStorage()): Promise<{
       systemPrompt: '你是 Minecraft 机器人。',
       goal,
       say: (text) => said.push(text),
+      ...(building == null ? {} : { building }),
     });
   return { faux, body, said, goal, start };
 }
@@ -164,4 +165,37 @@ test('withToolChoice：只在有 tools 时注入；auto 原样不动', () => {
   assert.equal(withToolChoice(payload, 'auto'), undefined);
   assert.equal(withToolChoice({ model: 'm', messages: [] }, 'required'), undefined, '没工具不注入（压缩请求）');
   assert.equal(withToolChoice(null, 'required'), undefined);
+});
+
+test('建筑：配置后多出 6 个工具；设计工具立刻回执并结束本轮', async () => {
+  const calls: string[] = [];
+  const building: BuildingBridge = {
+    design: (brief, tags) => {
+      calls.push(`${brief}:${tags ?? '-'}`);
+      return 'accepted：设计任务 t1（蓝图 b1）已开始';
+    },
+    rework: (blueprint) => `accepted：返工 ${blueprint} 已开始`,
+    cancel: (task) => task === 't1',
+    list: () => 'b1 5x9x5 · 120 格',
+  };
+  const { start } = await setup(new MemoryStorage(), building);
+  const baseline = await start();
+  assert.equal(baseline.toolNames.length, 20);
+  assert.match(await baseline.runner.toolText('DesignBuild', { brief: '小塔', descriptions: '设计小塔' }), /设计任务 t1/);
+  assert.deepEqual(calls, ['小塔:-']);
+  assert.equal(
+    await baseline.runner.toolText('CancelDesign', { task: 't1', descriptions: '取消它' }),
+    '已取消设计任务 t1',
+  );
+  assert.equal(await baseline.runner.toolText('ListBlueprints', { descriptions: '看看蓝图' }), 'b1 5x9x5 · 120 格');
+  await baseline.close();
+});
+
+test('建筑：没配置 mc-build 时，6 个建筑工具不出现在工具表里', async () => {
+  const { start } = await setup();
+  const baseline = await start();
+  assert.equal(baseline.toolNames.length, 14);
+  assert.ok(!baseline.toolNames.includes('DesignBuild'));
+  assert.ok(!baseline.toolNames.includes('BuildAt'));
+  await baseline.close();
 });

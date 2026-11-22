@@ -51,6 +51,11 @@ export interface BotConfig {
   chatMaxChars?: number;
   /** 在游戏聊天框里逐条打印模型工具调用；默认 false（环境变量 TOOL_CHAT=1 可开）。 */
   toolChat?: boolean;
+  /** 建筑：mc-build 位置与架构师模型覆盖。 */
+  build?: {
+    mcBuildDir?: string;
+    architect?: { provider?: string; model?: string };
+  };
 }
 
 export interface LoadedBot {

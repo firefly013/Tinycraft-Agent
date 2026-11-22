@@ -38,14 +38,14 @@ test('core 只 import core 自己或 node:', () => {
   }
 });
 
-test('工具面：14 个，文案 ≤ 1800 字符', () => {
-  assert.equal(CATALOG.length, 14);
+test('工具面：20 个，文案 ≤ 4000 字符', () => {
+  assert.equal(CATALOG.length, 20);
   let chars = 0;
   for (const tool of CATALOG) {
     chars += tool.description.length;
     for (const param of Object.values(tool.params ?? {})) chars += param.description?.length ?? 0;
   }
-  assert.ok(chars <= 1800, `工具文案 ${chars} 字符，超过 1800`);
+  assert.ok(chars <= 4000, `工具文案 ${chars} 字符，超过 4000`);
 });
 
 test('控制面顶层字段 ≤ 3（身体锁 + 被打断的动作 + 代次）', () => {

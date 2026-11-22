@@ -121,6 +121,51 @@ const DECLARATIONS: readonly Declaration[] = [
     action: false,
     params: { goal: { type: 'string' } },
   },
+  // ── 建筑：设计是后台任务（本地工具，立刻返回、完成事件唤醒），施工占身体 ──
+  {
+    name: 'DesignBuild',
+    mode: 'async',
+    action: false,
+    params: { brief: { type: 'string' }, tags: { type: 'string', optional: true } },
+  },
+  {
+    name: 'ReworkDesign',
+    mode: 'async',
+    action: false,
+    params: { blueprint: { type: 'string' }, notes: { type: 'string' } },
+  },
+  {
+    name: 'CancelDesign',
+    mode: 'sync',
+    action: false,
+    params: { task: { type: 'string' } },
+  },
+  {
+    name: 'ListBlueprints',
+    mode: 'sync',
+    action: false,
+    params: { query: { type: 'string', optional: true } },
+  },
+  {
+    name: 'BuildAt',
+    mode: 'async',
+    action: true,
+    params: {
+      blueprint: { type: 'string' },
+      x: { type: 'int' },
+      y: { type: 'int' },
+      z: { type: 'int' },
+      mode: { type: 'string', optional: true },
+      clearAir: { type: 'boolean', optional: true },
+    },
+  },
+  {
+    name: 'UndoBuild',
+    mode: 'async',
+    action: true,
+    // 有副作用：没有登记 resume，抢占后不续做（还原跑一半比不跑更糟）。
+    params: { blueprint: { type: 'string' } },
+  },
 ];
 
 /** 把 prompts.ts 里的文字贴到结构上。 */

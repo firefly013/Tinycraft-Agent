@@ -50,6 +50,24 @@ export interface BodyWithReflex extends Body {
   reflex?: (name: string, signal: AbortSignal) => Promise<void>;
 }
 
+/** 建筑：设计任务的外壳与蓝图查询；不配就是没有这 6 个工具。 */
+export interface BuildingBridge {
+  design(brief: string, tags?: string): string;
+  rework(blueprint: string, notes: string): string;
+  cancel(task: string): boolean;
+  list(query?: string): string;
+}
+
+/** 建筑相关的 6 个工具：没配置建筑时整组不交给模型。 */
+export const BUILDING_TOOLS: ReadonlySet<string> = new Set([
+  'DesignBuild',
+  'ReworkDesign',
+  'CancelDesign',
+  'ListBlueprints',
+  'BuildAt',
+  'UndoBuild',
+]);
+
 export interface BaselineOptions {
   models: Models;
   model: ModelRef;
@@ -66,6 +84,8 @@ export interface BaselineOptions {
   onToolCall?: (name: string, args: Record<string, unknown>) => void;
   /** 反射表。空数组表示没装反射。 */
   reflexes?: readonly ReflexSpec[];
+  /** 建筑：设计任务与蓝图查询；不给就隐藏这 6 个工具。 */
+  building?: BuildingBridge;
   /** 控制面转移的观测出口（TRACE=1 时接到日志）。 */
   onTrace?: (note: TraceNote) => void;
   /** 结构化日志。不给就完全不打日志（测试默认）。 */
@@ -163,13 +183,18 @@ export async function startBaseline(options: BaselineOptions): Promise<Baseline>
     },
   });
 
-  const declared = options.tools == null ? CATALOG : CATALOG.filter((tool) => options.tools!.includes(tool.name));
+  const declared =
+    options.tools == null
+      ? CATALOG.filter((tool) => options.building != null || !BUILDING_TOOLS.has(tool.name))
+      : CATALOG.filter(
+          (tool) => options.tools!.includes(tool.name) && (options.building != null || !BUILDING_TOOLS.has(tool.name)),
+        );
   const tools = [
     ...runnerTools(
       {
         tool: (name, args) => (runner == null ? Promise.resolve({ text: '还没准备好' }) : runner.tool(name, args)),
       },
-      CATALOG,
+      declared,
     ),
   ];
 
@@ -222,6 +247,24 @@ export async function startBaseline(options: BaselineOptions): Promise<Baseline>
     ...(options.onToolCall == null ? {} : { onToolCall: options.onToolCall }),
     ...(options.onTrace == null ? {} : { onTrace: options.onTrace }),
     localTools: {
+      ...(options.building == null
+        ? {}
+        : {
+            DesignBuild: (args: Record<string, unknown>) => ({
+              text: options.building!.design(String(args.brief), args.tags == null ? undefined : String(args.tags)),
+              terminate: true,
+            }),
+            ReworkDesign: (args: Record<string, unknown>) => ({
+              text: options.building!.rework(String(args.blueprint), String(args.notes)),
+              terminate: true,
+            }),
+            CancelDesign: (args: Record<string, unknown>) =>
+              options.building!.cancel(String(args.task))
+                ? `已取消设计任务 ${String(args.task)}`
+                : `没有在跑的设计任务：${String(args.task)}`,
+            ListBlueprints: (args: Record<string, unknown>) =>
+              options.building!.list(args.query == null ? undefined : String(args.query)),
+          }),
       Finish: () => ({ text: '本轮结束：没有动作。等下一次事件或定时唤醒再继续。', terminate: true }),
       Stop: () => runner?.stop() ?? '还没准备好',
       UpdateGoal: async (args) => {

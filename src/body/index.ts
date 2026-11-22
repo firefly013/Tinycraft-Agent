@@ -12,6 +12,9 @@ import { createRequire } from 'node:module';
 import type { ActionContext, Body } from '../shared/body.ts';
 import type { Kind, Level, LogEvent } from '../core/events.ts';
 import { CHAT_REPEAT_MAX, CHAT_REPEAT_WINDOW_MS, classifyChat } from '../core/chat.ts';
+import { createBuildPrimitives } from './build.ts';
+import type { McBuild } from './mcbuild.ts';
+import type { PlaceOps } from './place_bot.ts';
 import { assessCombat, armorPoints, combatPower, isInWaterLike, mobPower, scanTargets } from './combat.ts';
 import { isFood } from './food.ts';
 import { makePrimitives } from './primitives.ts';
@@ -66,6 +69,15 @@ export interface BodyOptions {
   snapshotSections?: readonly string[];
   /** 自动战斗开关（KillAura 与危险提醒）；默认开。手动 attack 工具不受影响。 */
   combat?: boolean;
+  /** 建筑：蓝图根目录与 mc-build。不给就没有 BuildAt / UndoBuild。 */
+  build?: {
+    blueprintsRoot: string;
+    mcBuild: McBuild;
+    /** 目标 MC 版本；不给就用握手后的 bot.version。 */
+    mcVersion?: string | null;
+    /** 测试注入：替换 mineflayer 放置适配层。 */
+    placeOps?: PlaceOps;
+  };
   /** 产出一条事件，由装配方接到 Runner.notify。 */
   onEvent: (event: LogEvent) => void;
   /** 断线后多久重连（毫秒），默认 2000。 */
@@ -309,7 +321,17 @@ export function wireBody(bot: AnyBot, options: BodyOptions): GameBody {
 
   const snapshot = (): string =>
     renderSnapshot(snapshotFromBot(bot, options.goal(), options.action?.() ?? null, vision), options.snapshotSections);
-  const primitives: Record<string, Primitive> = makePrimitives(bot, { movements: () => movements });
+  const primitives: Record<string, Primitive> = {
+  ...makePrimitives(bot, { movements: () => movements }),
+  ...(options.build == null
+    ? {}
+    : createBuildPrimitives(bot, {
+        blueprintsRoot: options.build.blueprintsRoot,
+        mcBuild: options.build.mcBuild,
+        mc: () => options.build?.mcVersion ?? (typeof bot.version === 'string' ? bot.version : null),
+        ...(options.build.placeOps == null ? {} : { placeOps: options.build.placeOps }),
+      })),
+};
   const runPrimitive = async (
     name: string,
     args: Record<string, unknown>,

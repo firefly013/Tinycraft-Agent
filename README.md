@@ -42,7 +42,7 @@ Tinycraft-Agent 把自由度收得很小：**工具面最小、控制流显式�
 
 一个跑在真实 Minecraft Java 服务器上的最小 agent：
 
-- **工具面最小**：只有 11 个动作原语 + 3 个流程工具。模型能做的事，就是它看到的事。
+- **工具面最小**：11 个动作原语 + 3 个流程工具；配置了 `mc-build` 后再多 6 个建筑工具。模型能做的事，就是它看到的事。
 - **控制面显式**：谁在动身体、结果是否过期、被打断的动作怎么续做，全部落在一台纯函数状态机里，而不是散落在 prompt 和 `try/catch` 中。
 - **反射与模型解耦**：落地水、自动战斗、低血进食、空闲拾取由身体自己处理，不唤醒模型（但会在上下文里留一条记录），也不靠模型"记得"。
 - **一切可观察**：每次控制面转移、每次请求、每条工具回执都有结构化日志与轨迹。
@@ -116,6 +116,22 @@ interface ControlState {
 
 执行契约：占身体的工具立刻返回 `accepted`；完成/失败通过事件回报。
 
+### 建筑（可选，需要外部 `mc-build`）
+
+配了 `mc-build` 之后多出 6 个工具：主模型只负责「要什么、建在哪」，子模型负责把蓝图做出来。
+
+| 工具 | 作用 |
+|---|---|
+| `DesignBuild` | 派一个子模型设计建筑：写脚本、编译、自检，产出蓝图目录 |
+| `ReworkDesign` | 在已有蓝图上改，不新开一份 |
+| `BuildAt` | 把蓝图建到指定原点；默认真实逐块放置，`mode=command` 用 `/fill`（需要 op） |
+| `UndoBuild` | 按施工前的现场快照还原 |
+| `ListBlueprints` | 列出蓝图（含可复用标记） |
+| `CancelDesign` | 取消一个后台设计任务，不影响身体 |
+
+设计任务不占身体、可以并发，`Stop` 不会停它们。蓝图目录在 `bots/<name>/build/blueprints/<id>/`，
+里面是 `script.js` + `plan.schem` + `meta.json` + 预览图；组件复用就是把小蓝图 `pasteSchem` 进新脚本。
+
 ## 安全边界
 
 Agent 会挖穿地形，所以"挖开之后会发生什么"必须先算清楚：
@@ -172,7 +188,8 @@ VISION=0 BOT=alice npm start
   "mc": { "host": "127.0.0.1", "port": 25565, "username": "Alice", "auth": "offline" },
   "vision": true,
   "combat": true,
-  "toolChat": true
+  "toolChat": true,
+  "build": { "mcBuildDir": "C:/path/to/mc-build" }
 }
 ```
 
@@ -195,6 +212,7 @@ VISION=0 BOT=alice npm start
 | `ADMIN_PORT` | 关 | 本机 HTTP 管理口（只绑 `127.0.0.1`） |
 | `TRACE` | 关 | `1` 打印控制面每次转移 |
 | `TOKEN_BUDGET` | `30000000` | 单会话 token 上限，`0` = 不限 |
+| `MC_BUILD_DIR` | — | `mc-build` 仓库路径；配了才启用建筑工具 |
 | `TOOLS` | 全部 | 只把列出的工具交给模型 |
 | `TOOL_OUTPUT_CHARS` | `20000` | 单条工具回执字符上限 |
 | `SNAPSHOT` | 全量 | `small` = 精简快照 |
@@ -245,6 +263,7 @@ npm run smoke   # 连接真实服务器跑一轮，验证端到端
 - [x] 生存循环：采集、合成、熔炼、吃饭、战斗、拾取
 - [x] 控制面 / 反射 / 检查点续做
 - [x] 挖掘安全边界：液体、不可破坏方块、间接流动
+- [x] 建筑：子模型设计蓝图，身体逐块施工（可撤销）
 - [ ] 下界：传送门浇筑、烈焰棒、猪灵交易
 - [ ] 末地：要塞定位、末影龙
 - [ ] 录一段完整通关视频
