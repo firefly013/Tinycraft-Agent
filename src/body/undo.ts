@@ -13,13 +13,29 @@ export interface UndoRecord {
   state: string;
 }
 
+export type UndoMode = 'command' | 'place';
+
 export function undoPath(blueprintDir: string): string {
   return join(blueprintDir, 'undo.jsonl');
 }
 
-/** 一次新的施工开始：旧快照作废。 */
-export function resetUndo(blueprintDir: string): void {
+function modePath(blueprintDir: string): string {
+  return join(blueprintDir, 'undo.mode');
+}
+
+/** 一次新的施工开始：旧快照作废，记下这次用哪种方式施工（撤销要用同一种方式）。 */
+export function resetUndo(blueprintDir: string, mode: UndoMode): void {
+  writeFileSync(modePath(blueprintDir), mode);
   writeFileSync(undoPath(blueprintDir), '');
+}
+
+export function readUndoMode(blueprintDir: string): UndoMode | null {
+  try {
+    const text = readFileSync(modePath(blueprintDir), 'utf8').trim();
+    return text === 'command' || text === 'place' ? text : null;
+  } catch {
+    return null;
+  }
 }
 
 export function appendUndo(blueprintDir: string, record: UndoRecord): void {
@@ -46,4 +62,5 @@ export function readUndo(blueprintDir: string): UndoRecord[] {
 
 export function clearUndo(blueprintDir: string): void {
   rmSync(undoPath(blueprintDir), { force: true });
+  rmSync(modePath(blueprintDir), { force: true });
 }

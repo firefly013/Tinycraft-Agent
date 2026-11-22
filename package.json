@@ -13,6 +13,7 @@
     "typecheck": "tsc --noEmit",
     "check": "tsc --noEmit && node --test",
     "smoke": "node scripts/smoke.ts",
+    "smoke:build": "node scripts/build-smoke.ts",
     "start": "node src/main.ts",
     "manual": "node scripts/manual.ts"
   },

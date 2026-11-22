@@ -19,7 +19,8 @@ import { planBuild, isAirState, itemForState } from './build_planner.ts';
 import type { PlacementStep, WorldView } from './build_planner.ts';
 import { alreadyThere, createPlaceBot } from './place_bot.ts';
 import type { PlaceOps } from './place_bot.ts';
-import { appendUndo, clearUndo, readUndo, resetUndo } from './undo.ts';
+import { appendUndo, clearUndo, readUndo, readUndoMode, resetUndo } from './undo.ts';
+import type { UndoRecord } from './undo.ts';
 import type { Primitive } from './primitives.ts';
 
 const require = createRequire(import.meta.url);
@@ -130,6 +131,7 @@ async function runCommandPlan(
   context: ActionContext,
   deps: BuildDeps,
   startBatch: number,
+  snapshot: () => void,
 ): Promise<string> {
   if (plan.stats.tooLong > 0) {
     throw new Error(`有 ${plan.stats.tooLong} 条命令超过 256 字符，服务器会拒绝；先拆小蓝图`);
@@ -150,6 +152,9 @@ async function runCommandPlan(
       bot.chat(command);
       await sleep(throttle);
     }
+    // 区块加载之后才能读到原始方块；撤销快照必须在这个点做。
+    await sleep(300);
+    snapshot();
     let index = startBatch;
     for (; index < batches.length; index++) {
       for (const command of batches[index]) {
@@ -177,6 +182,53 @@ async function runCommandPlan(
     }
     bot.removeListener?.('message', onMessage);
   }
+}
+
+/** 命令施工的撤销：用 /setblock 逐格恢复，不依赖背包材料。 */
+async function runCommandUndo(
+  bot: AnyBot,
+  records: readonly UndoRecord[],
+  context: ActionContext,
+  deps: BuildDeps,
+): Promise<string> {
+  const throttle = deps.throttleMs ?? 50;
+  const xs = records.map((record) => record.x);
+  const zs = records.map((record) => record.z);
+  const x1 = Math.min(...xs);
+  const x2 = Math.max(...xs);
+  const z1 = Math.min(...zs);
+  const z2 = Math.max(...zs);
+  const tile = 15;
+  const load: string[] = [];
+  for (let x = x1; x <= x2; x += tile) {
+    for (let z = z1; z <= z2; z += tile) {
+      load.push(`/forceload add ${x} ${z} ${Math.min(x + tile, x2)} ${Math.min(z + tile, z2)}`);
+    }
+  }
+  try {
+    for (const command of load) {
+      if (context.signal.aborted) throw new Error('aborted');
+      bot.chat(command);
+      await sleep(throttle);
+    }
+    await sleep(300);
+    for (const record of records) {
+      if (context.signal.aborted) throw new Error('aborted');
+      const state = record.state.includes(':') ? record.state : `minecraft:${record.state}`;
+      bot.chat(`/setblock ${record.x} ${record.y} ${record.z} ${state} replace`);
+      await sleep(throttle);
+    }
+    await sleep(200);
+  } finally {
+    for (const command of load) {
+      try {
+        bot.chat(command.replace('/forceload add', '/forceload remove'));
+      } catch {
+        // 清理失败不改变还原结果。
+      }
+    }
+  }
+  return `还原完成：${records.length} 格（命令）`;
 }
 
 /** 抽查 20 格：名字对得上就算过；对不上给数量，不逐格刷屏。 */
@@ -227,8 +279,9 @@ async function runPlacePlan(
     if (current != null) record(step, current);
     try {
       if (step.clear) await ops.dig(step);
-      await ops.equip(step.item);
       await ops.reach(step);
+      // 走到位再拿物品：pathfinder 移动时会换手持槽，先装备会被它覆盖。
+      await ops.equip(step.item);
       await ops.place(step, step.state);
       if (!alreadyThere(ops.stateAt(step), step.state)) throw new Error('放完状态不符');
       placed += 1;
@@ -273,7 +326,7 @@ export function createBuildPrimitives(bot: AnyBot, deps: BuildDeps): Record<stri
     const plan = await emitPlan(deps, id, { x, y, z }, clearAir);
 
     const dir = join(deps.blueprintsRoot, id);
-    resetUndo(dir);
+    resetUndo(dir, mode);
     const seen = new Set<string>();
     const record = (pos: { x: number; y: number; z: number }, state: string): void => {
       const key = `${pos.x},${pos.y},${pos.z}`;
@@ -282,13 +335,14 @@ export function createBuildPrimitives(bot: AnyBot, deps: BuildDeps): Record<stri
       appendUndo(dir, { x: pos.x, y: pos.y, z: pos.z, state });
     };
 
-    if (mode === 'command') {
+    const snapshot = (): void => {
       for (const block of plan.blocks) {
         const current = ops.stateAt(block);
         if (current != null && current !== block.state) record(block, current);
       }
-      return runCommandPlan(bot, plan, context, deps, start);
-    }
+    };
+
+    if (mode === 'command') return runCommandPlan(bot, plan, context, deps, start, snapshot);
 
     const build = planBuild(plan.blocks, { world: worldView(ops), inventory: ops.inventory() });
     if (build.missing.length > 0) {
@@ -317,6 +371,13 @@ export function createBuildPrimitives(bot: AnyBot, deps: BuildDeps): Record<stri
     const dir = join(deps.blueprintsRoot, id);
     const records = readUndo(dir);
     if (records.length === 0) return `没有可还原的现场：${id}`;
+
+    const mode = readUndoMode(dir);
+    if (mode === 'command') {
+      const text = await runCommandUndo(bot, records, context, deps);
+      clearUndo(dir);
+      return text;
+    }
 
     const stop = (): void => ops.stop();
     context.signal.addEventListener('abort', stop, { once: true });

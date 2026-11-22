@@ -99,6 +99,7 @@ function setup(plan: EmitPlan, options: { batchSize?: number } = {}) {
       primitives.BuildAt({ blueprint: 'tower', x: 0, y: 64, z: 0, mode: 'command', ...args }, context),
     resume: (checkpoint: unknown, args: Record<string, unknown> = {}) =>
       primitives.BuildAt.resume!({ blueprint: 'tower', x: 0, y: 64, z: 0, mode: 'command', ...args }, context, checkpoint),
+    undo: (args: Record<string, unknown> = {}) => primitives.UndoBuild({ blueprint: 'tower', ...args }, context),
     cleanup: () => rmSync(root, { recursive: true, force: true }),
   };
 }
@@ -168,5 +169,16 @@ test('抽查：方块对不上时给出数量', async () => {
   env.bot.blockAt = () => ({ name: 'dirt' });
   const text = await env.build();
   assert.match(text, /有 1 格对不上/);
+  env.cleanup();
+});
+
+test('命令施工的撤销：按快照用 /setblock 逐格恢复', async () => {
+  const commands = Array.from({ length: 4 }, (_, i) => `/setblock ${i} 64 0 minecraft:stone replace`);
+  const env = setup(planWith(commands));
+  env.bot.blockAt = () => ({ name: 'dirt' });
+  await env.build();
+  const text = await env.undo();
+  assert.match(text, /还原完成：4 格（命令）/);
+  assert.equal(env.bot.sent.filter((line) => line.includes('minecraft:dirt')).length, 4);
   env.cleanup();
 });

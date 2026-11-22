@@ -8,7 +8,7 @@ import { satisfiesState } from './build_planner.ts';
 
 const require = createRequire(import.meta.url);
 const { Vec3 } = require('vec3') as { Vec3: new (x: number, y: number, z: number) => AnyVec };
-const { GoalNear, GoalPlaceBlock } = require('mineflayer-pathfinder') as {
+const { GoalNear, GoalPlaceBlock } = (require('mineflayer-pathfinder') as { goals: Record<string, unknown> }).goals as {
   GoalNear: new (pos: AnyVec, range: number) => unknown;
   GoalPlaceBlock: new (pos: AnyVec, world: unknown, options: Record<string, unknown>) => unknown;
 };

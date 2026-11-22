@@ -104,7 +104,7 @@ test('真实执行器：空地上放一块，按 place 顺序执行并核对状�
   const env = setup(planOfBlocks([{ x: 0, y: 1, z: 0, state: 'minecraft:stone' }]), { '0,0,0': 'minecraft:stone' });
   const text = await env.build();
   assert.match(text, /施工完成：计划 1 步，放置 1/);
-  assert.deepEqual(env.fake.calls, ['equip stone', 'reach 0,1,0', 'place 0,1,0']);
+  assert.deepEqual(env.fake.calls, ['reach 0,1,0', 'equip stone', 'place 0,1,0']);
   assert.equal(env.fake.cells.get('0,1,0'), 'minecraft:stone');
   assert.deepEqual(env.checkpoints, [{ mode: 'place', index: 1 }]);
   env.cleanup();
@@ -128,7 +128,7 @@ test('真实执行器：目标位置有别的方块，先挖再放', async () =>
     '0,1,0': 'minecraft:dirt',
   });
   await env.build();
-  assert.deepEqual(env.fake.calls.slice(0, 2), ['dig 0,1,0', 'equip stone']);
+  assert.deepEqual(env.fake.calls.slice(0, 2), ['dig 0,1,0', 'reach 0,1,0']);
   env.cleanup();
 });
 
