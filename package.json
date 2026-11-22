@@ -14,6 +14,7 @@
     "check": "tsc --noEmit && node --test",
     "smoke": "node scripts/smoke.ts",
     "smoke:build": "node scripts/build-smoke.ts",
+    "smoke:design": "node scripts/design-smoke.ts",
     "start": "node src/main.ts",
     "manual": "node scripts/manual.ts"
   },

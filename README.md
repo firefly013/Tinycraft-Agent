@@ -244,6 +244,7 @@ tests/            测试（node --test 直接跑 TypeScript）
 npm run check   # tsc --noEmit + node --test
 npm run smoke   # 连接真实服务器跑一轮，验证端到端
 npm run smoke:build   # 建筑端到端：编译 → 命令施工 → 撤销 → 真实放置（需要 mc-build 与 op 用户名）
+npm run smoke:design  # 架构师端到端：真实模型 + 真实 mc-build，不连服务器
 ```
 
 测试覆盖控制面纯函数、工具参数校验、反射仲裁、快照渲染和每个原语的错误分支。没有 mock 整个世界的"集成测试"——那类测试在这里只会骗自己。
