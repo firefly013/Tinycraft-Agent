@@ -14,6 +14,7 @@ import type { DesignInput } from '../src/agent/architect.ts';
 function fakeMcBuild(): McBuild {
   return {
     dir: '/mc-build',
+    run: async () => ({ code: 0, stdout: 'OK build → plan.schem', stderr: '' }),
     build: async () => ({
       ok: true,
       summary: {
@@ -65,7 +66,14 @@ test('设计会话：写脚本 → 编译 → 交卷，产出尺寸/材料/标�
     fauxAssistantMessage([fauxToolCall('writeScript', { content: "builder.set(0, 0, 0, 'stone');" })], {
       stopReason: 'toolUse',
     }),
-    fauxAssistantMessage([fauxToolCall('runBuild', {})], { stopReason: 'toolUse' }),
+    fauxAssistantMessage(
+      [
+        fauxToolCall('runMcBuild', {
+          args: ['build', 'script.js', '-o', 'plan.schem', '--mc', '1.21.4', '--views', 'top,south', '--json'],
+        }),
+      ],
+      { stopReason: 'toolUse' },
+    ),
     fauxAssistantMessage([fauxToolCall('finish', { summary: '一个石头方块', tags: 'stone, test', reusable: true })], {
       stopReason: 'toolUse',
     }),
@@ -75,6 +83,7 @@ test('设计会话：写脚本 → 编译 → 交卷，产出尺寸/材料/标�
     models,
     model: { provider: 'faux', modelId: faux.getModel().id },
     blueprintsRoot: root,
+    workspaceRoot: base,
     mcBuild: fakeMcBuild(),
     mc: () => '1.21.4',
   });

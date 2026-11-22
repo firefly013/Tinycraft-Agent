@@ -131,6 +131,7 @@ interface ControlState {
 
 设计任务不占身体、可以并发，`Stop` 不会停它们。蓝图目录在 `bots/<name>/build/blueprints/<id>/`，
 里面是 `script.js` + `plan.schem` + `meta.json` + 预览图；组件复用就是把小蓝图 `pasteSchem` 进新脚本。
+子模型直接驱动 `mc-build` 的 `build` / `preview` / `check` / `assets`，可以挑视角、裁剪局部、看透视与标尺图。
 
 ## 安全边界
 

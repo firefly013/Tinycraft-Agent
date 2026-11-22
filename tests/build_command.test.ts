@@ -78,6 +78,7 @@ function setup(plan: EmitPlan, options: { batchSize?: number } = {}) {
     blueprintsRoot: root,
     mcBuild: {
       dir: '/mc-build',
+      run: async () => ({ code: 0, stdout: '', stderr: '' }),
       build: async () => {
         throw new Error('not used');
       },

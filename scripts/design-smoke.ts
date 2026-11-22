@@ -44,6 +44,7 @@ const architecture = createArchitecture({
       models,
       model: { provider: providerId, modelId },
       blueprintsRoot,
+      workspaceRoot: resolve(root, 'build'),
       mcBuild,
       mc: () => mc,
     }),
@@ -57,7 +58,7 @@ const brief = env.SMOKE_BRIEF ?? '一座 3x3 的石头小屋，墙高 3，开一
 const task = architecture.start(brief, ['smoke']);
 console.log(`设计开始：${task.blueprintId}（${brief}）`);
 
-const timeout = new Promise<void>((resolve) => setTimeout(resolve, Number(env.SMOKE_TIMEOUT_MS ?? 300_000)));
+const timeout = new Promise<void>((resolve) => setTimeout(resolve, Number(env.SMOKE_TIMEOUT_MS ?? 600_000)));
 await Promise.race([architecture.settle(), timeout]);
 
 const meta = readBlueprint(blueprintsRoot, task.blueprintId);

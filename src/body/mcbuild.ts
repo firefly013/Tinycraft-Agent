@@ -120,6 +120,11 @@ export function createMcBuild(options: McBuildOptions) {
   return {
     dir,
 
+    /** 通用入口：只负责起子进程，不认识参数。给架构师直接驱动 mc-build 用。 */
+    run(argv: readonly string[], cwd: string): Promise<RunResult> {
+      return run([...argv], cwd, timeoutMs);
+    },
+
     /**
      * 编译脚本并自检。
      *

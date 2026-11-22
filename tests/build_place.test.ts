@@ -75,6 +75,7 @@ function setup(plan: EmitPlan, world: Record<string, string>, inventory: Record<
     blueprintsRoot: root,
     mcBuild: {
       dir: '/mc-build',
+      run: async () => ({ code: 0, stdout: '', stderr: '' }),
       build: async () => {
         throw new Error('not used');
       },

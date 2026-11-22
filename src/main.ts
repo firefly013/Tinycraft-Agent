@@ -232,6 +232,7 @@ if (mcBuildDir != null && mcBuildDir !== '') {
         model: { provider: architectProviderId, modelId: architectModelId },
         thinkingLevel,
         blueprintsRoot: blueprintsRoot as string,
+        workspaceRoot: resolve(`./${bot.dir}`, 'build'),
         mcBuild: mcBuild as ReturnType<typeof createMcBuild>,
         mc: () => buildVersion,
       }),
