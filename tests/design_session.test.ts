@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createModels } from '@earendil-works/pi-ai/models';
-import { ToolTask, hook } from '@earendil-works/pi-durable';
+import { GenerationTask, ToolTask, hook } from '@earendil-works/pi-durable';
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 
 import { createBlueprint } from '../src/agent/blueprints.ts';
@@ -101,6 +101,47 @@ test('设计会话：写脚本 → 编译 → 交卷，产出尺寸/材料/标�
   assert.equal(result.reusable, true);
   assert.deepEqual(result.size, { x: 1, y: 1, z: 1 });
   assert.deepEqual(result.materials, { stone: 1 });
+  rmSync(base, { recursive: true, force: true });
+});
+
+test('设计会话：不确定时先查 CLI 教程，并能完整拿到教程输出', async () => {
+  const base = mkdtempSync(join(tmpdir(), 'tc-design-tutorial-'));
+  const root = join(base, 'blueprints');
+  const blueprint = createBlueprint(root, '查教程', { mc: '1.21.4' });
+  const tutorial = 'overview  概览\nbuild  编译\npreview  相机';
+  const faux = fauxProvider();
+  const models = createModels();
+  models.setProvider(faux.provider);
+  let seen = '';
+  let promptSeen = false;
+
+  faux.setResponses([
+    fauxAssistantMessage([fauxToolCall('runMcBuild', { args: ['tutorial', '--list'] })], { stopReason: 'toolUse' }),
+    fauxAssistantMessage([fauxToolCall('writeScript', { content: "builder.set(0, 0, 0, 'stone');" })], { stopReason: 'toolUse' }),
+    fauxAssistantMessage([fauxToolCall('finish', { summary: '完成', tags: '', reusable: false })], { stopReason: 'toolUse' }),
+  ]);
+
+  const session = createDesignSession({
+    models,
+    model: { provider: 'faux', modelId: faux.getModel().id },
+    blueprintsRoot: root,
+    workspaceRoot: base,
+    mcBuild: { ...fakeMcBuild(), run: async () => ({ code: 0, stdout: tutorial, stderr: '' }) },
+    mc: () => '1.21.4',
+    hooks: [
+      hook(GenerationTask, { beforeRequest: (request) => { promptSeen = JSON.stringify(request.messages).includes('先查教程'); return undefined; } }),
+      hook(ToolTask, { afterTool: (call, result) => { if (call.name === 'runMcBuild') seen = result.output?.map((part) => part.type === 'text' ? part.text : '').join('') ?? ''; return undefined; } }),
+    ],
+  });
+  const result = await session.run({
+    blueprintDir: blueprint.dir,
+    blueprintId: blueprint.id,
+    brief: '测试教程查询',
+    signal: new AbortController().signal,
+  });
+  assert.ok(result != null);
+  assert.equal(promptSeen, true, '系统提示必须要求不确定时先查教程');
+  assert.ok(seen.includes(tutorial));
   rmSync(base, { recursive: true, force: true });
 });
 

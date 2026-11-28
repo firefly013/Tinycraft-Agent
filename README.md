@@ -149,8 +149,9 @@ interface ControlState {
    forceload、抽查），没 op 走逐块放置（单块失败跳过、连续 10 块停、每块检查点）。
    施工前记现场快照，`UndoBuild` 按同一条路还原。
 
-子模型直接驱动 mc-build 的 CLI：`build --views` 挑视角、`preview --crop --persp --ruler` 放大审查、
-`check` 校验 palette、`assets` 扫构件库；模型支持图片输入时还会把 PNG 读进上下文。
+子模型直接驱动 mc-build 的 CLI：不确定参数或 API 时先用 `tutorial --list` / `tutorial <章节>` 查内置完整教程；
+`build --views` 挑视角、`preview --crop --persp --ruler` 放大审查、`check` 校验 palette、`assets` 扫构件库；
+模型支持图片输入时还会把 PNG 读进上下文。
 
 启用：克隆 [mc-build](https://github.com/firefly013/mc-build)，设 `MC_BUILD_DIR=/path/to/mc-build`
 （或写进 `bot.json` 的 `build.mcBuildDir`）。没配置时这 6 个工具不会出现在工具表里。

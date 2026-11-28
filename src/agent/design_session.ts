@@ -41,7 +41,8 @@ function architectPrompt(vision: boolean): string {
     '',
     '工具：',
     '- writeScript / readScript：写/读 script.js（整份覆盖）。',
-    '- runMcBuild(args)：直接调用 mc-build CLI，参数原样透传。只允许 build / preview / check / assets。',
+    '- runMcBuild(args)：直接调用 mc-build CLI，参数原样透传。只允许 tutorial / build / preview / check / assets。',
+    '    例：["tutorial","--list"] 列出教程章节；["tutorial","preview"] 查完整预览教程。',
     '    例：["build","script.js","-o","plan.schem","--mc","1.21.4","--views","main,south,top","--json"]',
     '    例：["preview","plan.schem","-o","door.png","--crop","2,0,2,6,4,6","--persp","--ascii"]',
     '    例：["check","plan.schem","--json"]',
@@ -66,6 +67,7 @@ function architectPrompt(vision: boolean): string {
     '方块状态可写 \'oak_stairs?facing=east\'，L2 会补全其余属性。',
     '',
     '工作方式（重要）：',
+    '0. 不确定命令参数、Builder API 或错误含义时，先查教程：tutorial --list / tutorial <章节>；不要靠猜。',
     '1. 先写脚本并 build。用 --views 只挑你要看的立面，别每次都渲全部。',
     '2. 读 SELFCHECK 的坐标簇：悬空、不连通、楼梯无支撑。用 preview --crop 放大问题区域，',
     '   用 --persp 看空间感，用 --ruler 看大场地，用 --ascii 拿文本侧影。',
@@ -109,7 +111,7 @@ function guardArgs(args: readonly string[], cwd: string, workspace: string): str
   return null;
 }
 
-const ALLOWED_VERBS = new Set(['build', 'preview', 'check', 'assets']);
+const ALLOWED_VERBS = new Set(['tutorial', 'build', 'preview', 'check', 'assets']);
 
 export function createDesignSession(deps: DesignSessionDeps): DesignSession {
   const workspace = resolve(deps.workspaceRoot);
@@ -171,7 +173,7 @@ export function createDesignSession(deps: DesignSessionDeps): DesignSession {
             const { args } = raw as { args: string[] };
             if (!Array.isArray(args) || args.length === 0) return textResult('args 需要一个非空数组');
             const verb = args[0];
-            if (!ALLOWED_VERBS.has(verb)) return textResult(`不允许的子命令：${verb}（只能是 build / preview / check / assets）`);
+            if (!ALLOWED_VERBS.has(verb)) return textResult(`不允许的子命令：${verb}（只能是 tutorial / build / preview / check / assets）`);
             const guard = guardArgs(args, dir, workspace);
             if (guard != null) return textResult(guard);
             note(`runMcBuild ${args.join(' ')}`);
