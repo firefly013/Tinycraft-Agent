@@ -146,6 +146,7 @@ export class Runner {
       if (typeof result === 'string') return { text: result };
       return {
         text: result.text,
+        ...(result.images == null ? {} : { images: result.images }),
         ...(result.terminate === true ? { terminate: true } : {}),
       };
     }

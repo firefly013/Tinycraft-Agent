@@ -86,7 +86,10 @@ export function toToolRegistration(declaration: ToolDeclaration, run: ToolRun): 
     execute: async (args: unknown) => {
       const outcome = await run(declaration.name, (args ?? {}) as Record<string, unknown>);
       return {
-        output: [{ type: 'text' as const, text: outcome.text }],
+        output: [
+          { type: 'text' as const, text: outcome.text },
+          ...(outcome.images ?? []).map((image) => ({ type: 'image' as const, data: image.data, mimeType: image.mimeType })),
+        ],
         ...(outcome.terminate === true ? { control: { terminate: true } } : {}),
       };
     },

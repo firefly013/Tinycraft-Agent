@@ -3,9 +3,13 @@ import assert from 'node:assert/strict';
 import { CATALOG, TOOL_BY_NAME } from '../src/body/catalog.ts';
 import { TOOL_TEXT } from '../src/prompts.ts';
 
-test('工具面是 20 个，名字唯一', () => {
-  assert.equal(CATALOG.length, 20);
-  assert.equal(new Set(CATALOG.map((tool) => tool.name)).size, 20);
+test('工具面是 22 个，名字唯一', () => {
+  assert.equal(CATALOG.length, 22);
+  assert.equal(new Set(CATALOG.map((tool) => tool.name)).size, 22);
+  assert.ok(TOOL_BY_NAME.has('ReviewBuild'));
+  assert.ok(TOOL_BY_NAME.has('SendToSubagent'));
+  assert.ok(TOOL_BY_NAME.has('AcceptBuild'));
+  assert.ok(!TOOL_BY_NAME.has('ReworkDesign'));
 });
 
 test('工具文案总量 ≤ 4000 字符（上下文预算）', () => {
@@ -27,7 +31,7 @@ test('身体原语与大脑工具分得开', () => {
   const bodyTools = CATALOG.filter((tool) => tool.action);
   assert.equal(bodyTools.length, 13);
   const localTools = CATALOG.filter((tool) => !tool.action);
-  assert.equal(localTools.length, 7);
+  assert.equal(localTools.length, 9);
   // 长动作必须是 async，查询不许占身体。
   assert.equal(TOOL_BY_NAME.get('collectBlock')?.mode, 'async');
   assert.equal(TOOL_BY_NAME.get('inventory')?.action, true);

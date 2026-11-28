@@ -1,80 +1,83 @@
 /**
- * 架构师调度：把「设计一次建筑」当成一个后台任务。
+ * 建筑子模型会话调度。
  *
- * 这里只管生命周期：建蓝图目录、起会话、收集结果、写 meta、发事件、取消、并发。
- * 真正的模型会话在 `design_session.ts`，测试用假会话替换。
+ * 会话元数据持久化，真正的模型运行时按需打开/关闭；这里只保留活动运行句柄。
+ * 主模型通过稳定 Session ID 打回意见，同一蓝图逐 revision 交付。
  */
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { BlueprintMeta } from './blueprints.ts';
 import { createBlueprint, readBlueprint, updateBlueprint } from './blueprints.ts';
+import type { BuildDelivery, BuildSessionMeta } from './build_sessions.ts';
+import {
+  createBuildSession,
+  listBuildSessions,
+  readBuildSession,
+  recoverInterruptedSessions,
+  writeBuildSession,
+} from './build_sessions.ts';
 
-export interface DesignResult {
-  /** 给主模型看的一句话结论。 */
-  summary: string;
-  tags: string[];
-  reusable: boolean;
-  size: { x: number; y: number; z: number };
-  blocks: number;
-  materials: Record<string, number>;
-}
+export type { BuildDelivery } from './build_sessions.ts';
 
 export interface DesignInput {
+  sessionId: string;
   blueprintDir: string;
   blueprintId: string;
   brief: string;
-  notes?: string;
+  /** 本次追加给子模型的输入：首次是 brief，后续是主模型审稿意见。 */
+  message: string;
+  /** 本次尝试交付的 revision。 */
+  revision: number;
   signal: AbortSignal;
 }
 
 export interface DesignSession {
-  run(input: DesignInput): Promise<DesignResult | null>;
+  run(input: DesignInput): Promise<BuildDelivery | null>;
   close?(): Promise<void>;
 }
 
 export interface DesignEvent {
   kind: 'done' | 'failed' | 'cancelled';
-  taskId: string;
+  sessionId: string;
   blueprintId: string;
+  revision: number;
   text: string;
 }
 
 export interface ArchitectureOptions {
-  /** 蓝图根目录（`bots/<name>/build/blueprints`）。 */
   blueprintsRoot: string;
-  /** 目标 MC 版本。 */
+  sessionsRoot: string;
   mc: () => string | null;
-  createSession: (blueprintId: string) => DesignSession;
+  createSession: (sessionId: string, blueprintId: string) => DesignSession;
   onEvent: (event: DesignEvent) => void;
 }
 
 export interface DesignTaskView {
-  taskId: string;
+  sessionId: string;
   blueprintId: string;
   brief: string;
-  state: 'running' | 'done' | 'failed' | 'cancelled';
-  startedAt: number;
-  elapsedMs: number;
-}
-
-interface TaskState extends DesignTaskView {
-  controller: AbortController;
-  session: DesignSession;
+  state: BuildSessionMeta['state'];
+  revision: number;
 }
 
 export interface Architecture {
   start(brief: string, tags?: readonly string[]): DesignTaskView;
-  rework(blueprintId: string, notes: string): DesignTaskView;
-  cancel(taskId: string): boolean;
+  send(sessionId: string, message: string): DesignTaskView;
+  accept(sessionId: string): boolean;
+  cancel(sessionId: string): boolean;
+  get(sessionId: string): BuildSessionMeta | null;
   list(): DesignTaskView[];
-  /** 等所有任务结束（测试与停机用）。 */
   settle(): Promise<void>;
 }
 
+interface ActiveRun {
+  controller: AbortController;
+  work: Promise<void>;
+}
+
 function parseTags(tags: readonly string[] | undefined): string[] {
-  if (tags == null) return [];
   const out: string[] = [];
-  for (const tag of tags) {
+  for (const tag of tags ?? []) {
     for (const part of tag.split(',')) {
       const trimmed = part.trim();
       if (trimmed !== '' && !out.includes(trimmed)) out.push(trimmed);
@@ -83,158 +86,176 @@ function parseTags(tags: readonly string[] | undefined): string[] {
   return out;
 }
 
-function view(task: TaskState, now = Date.now()): DesignTaskView {
+function view(meta: BuildSessionMeta): DesignTaskView {
   return {
-    taskId: task.taskId,
-    blueprintId: task.blueprintId,
-    brief: task.brief,
-    state: task.state,
-    startedAt: task.startedAt,
-    elapsedMs: now - task.startedAt,
+    sessionId: meta.sessionId,
+    blueprintId: meta.blueprintId,
+    brief: meta.brief,
+    state: meta.state,
+    revision: meta.revision,
   };
 }
 
 export function createArchitecture(options: ArchitectureOptions): Architecture {
-  const tasks = new Map<string, TaskState>();
-  const running = new Set<Promise<void>>();
+  const active = new Map<string, ActiveRun>();
+  recoverInterruptedSessions(options.sessionsRoot, new Set());
 
-  const runTask = (task: TaskState): void => {
-    const work = (async () => {
-      try {        const result = await task.session.run({
-          blueprintDir: join(options.blueprintsRoot, task.blueprintId),
-          blueprintId: task.blueprintId,
-          brief: task.brief,
-          ...(task.taskId === task.blueprintId ? {} : {}),
-          signal: task.controller.signal,
+  const run = (initial: BuildSessionMeta, message: string): DesignTaskView => {
+    const revision = initial.revision + 1;
+    const running = writeBuildSession(options.sessionsRoot, {
+      ...initial,
+      state: 'running',
+      lastError: undefined,
+    });
+    const controller = new AbortController();
+    const session = options.createSession(running.sessionId, running.blueprintId);
+    const work = (async (): Promise<void> => {
+      try {
+        const result = await session.run({
+          sessionId: running.sessionId,
+          blueprintDir: join(options.blueprintsRoot, running.blueprintId),
+          blueprintId: running.blueprintId,
+          brief: running.brief,
+          message,
+          revision,
+          signal: controller.signal,
         });
-        if (task.controller.signal.aborted) {
-          task.state = 'cancelled';
-          options.onEvent({ kind: 'cancelled', taskId: task.taskId, blueprintId: task.blueprintId, text: `已取消 ${task.taskId}` });
-          return;
-        }
-        if (result == null) {
-          task.state = 'failed';
+        if (controller.signal.aborted) {
+          writeBuildSession(options.sessionsRoot, { ...running, state: 'cancelled' });
           options.onEvent({
-            kind: 'failed',
-            taskId: task.taskId,
-            blueprintId: task.blueprintId,
-            text: `设计失败：${task.taskId} 没有通过自检，蓝图未产出（脚本留在目录里）`,
+            kind: 'cancelled',
+            sessionId: running.sessionId,
+            blueprintId: running.blueprintId,
+            revision,
+            text: `已取消会话 ${running.sessionId}`,
           });
           return;
         }
-        const updated = updateBlueprint(options.blueprintsRoot, task.blueprintId, {
-          tags: result.tags,
-          reusable: result.reusable,
-          size: result.size,
-          blocks: result.blocks,
-          materials: result.materials,
+        if (result == null) {
+          writeBuildSession(options.sessionsRoot, {
+            ...running,
+            state: 'failed',
+            lastError: '没有通过自检，蓝图未产出',
+          });
+          options.onEvent({
+            kind: 'failed',
+            sessionId: running.sessionId,
+            blueprintId: running.blueprintId,
+            revision,
+            text: `设计失败：${running.sessionId} 没有通过自检，蓝图未产出（脚本留在目录里）`,
+          });
+          return;
+        }
+        const delivery: BuildDelivery = { ...result, revision };
+        const updated = updateBlueprint(options.blueprintsRoot, running.blueprintId, {
+          tags: delivery.tags,
+          reusable: delivery.reusable,
+          size: delivery.size,
+          blocks: delivery.blocks,
+          materials: delivery.materials,
           mc: options.mc(),
         });
-        if (updated == null) throw new Error(`蓝图 ${task.blueprintId} 的 meta 写不进去`);
-        task.state = 'done';
+        if (updated == null) throw new Error(`蓝图 ${running.blueprintId} 的 meta 写不进去`);
+        writeBuildSession(options.sessionsRoot, {
+          ...running,
+          state: 'awaiting_review',
+          revision,
+          lastDelivery: delivery,
+          lastError: undefined,
+        });
         options.onEvent({
           kind: 'done',
-          taskId: task.taskId,
-          blueprintId: task.blueprintId,
-          text: doneText(updated, result),
+          sessionId: running.sessionId,
+          blueprintId: running.blueprintId,
+          revision,
+          text: doneText(updated, delivery, running.sessionId),
         });
       } catch (error: unknown) {
-        task.state = task.controller.signal.aborted ? 'cancelled' : 'failed';
+        const cancelled = controller.signal.aborted;
         const reason = error instanceof Error ? error.message : String(error);
+        writeBuildSession(options.sessionsRoot, {
+          ...running,
+          state: cancelled ? 'cancelled' : 'failed',
+          lastError: reason,
+        });
         options.onEvent({
-          kind: task.state === 'cancelled' ? 'cancelled' : 'failed',
-          taskId: task.taskId,
-          blueprintId: task.blueprintId,
-          text: task.state === 'cancelled' ? `已取消 ${task.taskId}` : `设计失败：${task.taskId}（${reason}）`,
+          kind: cancelled ? 'cancelled' : 'failed',
+          sessionId: running.sessionId,
+          blueprintId: running.blueprintId,
+          revision,
+          text: cancelled ? `已取消会话 ${running.sessionId}` : `设计失败：${running.sessionId}（${reason}）`,
         });
       } finally {
         try {
-          await task.session.close?.();
+          await session.close?.();
         } catch {
-          // 关闭失败不改变任务结论。
+          // 关闭失败不改变交付结论。
         }
       }
     })();
-    running.add(work);
-    void work.finally(() => running.delete(work));
+    active.set(running.sessionId, { controller, work });
+    void work.finally(() => active.delete(running.sessionId));
+    return view(running);
   };
 
   return {
     start(brief, tags) {
       const blueprint = createBlueprint(options.blueprintsRoot, brief, { mc: options.mc() });
       updateBlueprint(options.blueprintsRoot, blueprint.id, { tags: parseTags(tags) });
-      const task: TaskState = {
-        taskId: blueprint.id,
-        blueprintId: blueprint.id,
-        brief,
-        state: 'running',
-        startedAt: Date.now(),
-        elapsedMs: 0,
-        controller: new AbortController(),
-        session: options.createSession(blueprint.id),
-      };
-      tasks.set(task.taskId, task);
-      runTask(task);
-      return view(task);
+      const session = createBuildSession(options.sessionsRoot, { blueprintId: blueprint.id, brief });
+      return run(session, brief);
     },
 
-    rework(blueprintId, notes) {
-      const existing = readBlueprint(options.blueprintsRoot, blueprintId);
-      if (existing == null) throw new Error(`没有这个蓝图：${blueprintId}`);
-      if ([...tasks.values()].some((task) => task.blueprintId === blueprintId && task.state === 'running')) {
-        throw new Error(`蓝图 ${blueprintId} 正在改，等它跑完`);
-      }
-      const task: TaskState = {
-        taskId: `${blueprintId}~${Date.now().toString(36)}`,
-        blueprintId,
-        brief: existing.brief,
-        state: 'running',
-        startedAt: Date.now(),
-        elapsedMs: 0,
-        controller: new AbortController(),
-        session: options.createSession(blueprintId),
-      };
-      tasks.set(task.taskId, task);
-      // 返工：把备注当成本次输入；brief 仍然是原始的。
-      const original = task.session.run.bind(task.session);
-      task.session = {
-        run: (input) => original({ ...input, notes }),
-        ...(task.session.close == null ? {} : { close: () => task.session.close!() }),
-      };
-      runTask(task);
-      return view(task);
+    send(sessionId, message) {
+      const session = readBuildSession(options.sessionsRoot, sessionId);
+      if (session == null) throw new Error(`没有这个会话：${sessionId}`);
+      if (active.has(sessionId) || session.state === 'running') throw new Error(`会话 ${sessionId} 正在运行`);
+      if (session.state === 'cancelled') throw new Error(`会话 ${sessionId} 已取消`);
+      if (message.trim() === '') throw new Error('打回意见不能为空');
+      return run(session, message);
     },
 
-    cancel(taskId) {
-      const task = tasks.get(taskId);
-      if (task == null || task.state !== 'running') return false;
-      task.controller.abort();
-      task.state = 'cancelled';
+    accept(sessionId) {
+      const session = readBuildSession(options.sessionsRoot, sessionId);
+      if (session == null) throw new Error(`没有这个会话：${sessionId}`);
+      if (session.state !== 'awaiting_review') return false;
+      writeBuildSession(options.sessionsRoot, { ...session, state: 'accepted' });
       return true;
     },
 
+    cancel(sessionId) {
+      const current = active.get(sessionId);
+      if (current == null) return false;
+      current.controller.abort();
+      return true;
+    },
+
+    get(sessionId) {
+      return readBuildSession(options.sessionsRoot, sessionId);
+    },
+
     list() {
-      return [...tasks.values()].map((task) => view(task));
+      return listBuildSessions(options.sessionsRoot).map(view);
     },
 
     async settle() {
-      while (running.size > 0) await Promise.all([...running]);
+      while (active.size > 0) await Promise.all([...active.values()].map((item) => item.work));
     },
   };
 }
 
-function doneText(meta: BlueprintMeta, result: DesignResult): string {
-  const { x, y, z } = result.size;
-  const tags = result.tags.length === 0 ? '' : ` · ${result.tags.join(',')}`;
-  const reusable = result.reusable ? ' · 可复用' : '';
+function doneText(meta: BlueprintMeta, delivery: BuildDelivery, sessionId: string): string {
+  const { x, y, z } = delivery.size;
+  const tags = delivery.tags.length === 0 ? '' : ` · ${delivery.tags.join(',')}`;
+  const reusable = delivery.reusable ? ' · 可复用' : '';
   return (
-    `设计完成：${meta.id} ${x}x${y}x${z} · ${result.blocks} 格${tags}${reusable}\n` +
-    `${result.summary}\n` +
-    `目录：${join('build', 'blueprints', meta.id)}`
+    `设计完成：会话 ${sessionId} revision ${delivery.revision} ${x}x${y}x${z} · ${delivery.blocks} 格${tags}${reusable}\n` +
+    `${delivery.summary}\n` +
+    `目录：build/blueprints/${meta.id}`
   );
 }
 
-/** 蓝图目录是否存在（给返工/施工做前置检查）。 */
+/** 蓝图目录是否存在（给施工做前置检查）。 */
 export function blueprintExists(root: string, id: string): boolean {
   return existsSync(join(root, id, 'plan.schem'));
 }

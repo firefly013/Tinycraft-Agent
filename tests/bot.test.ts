@@ -167,31 +167,48 @@ test('withToolChoice：只在有 tools 时注入；auto 原样不动', () => {
   assert.equal(withToolChoice(null, 'required'), undefined);
 });
 
-test('建筑：配置后多出 6 个工具；设计工具立刻回执并结束本轮', async () => {
+test('建筑：Session ID、审稿、打回、接受工具完整接线', async () => {
   const calls: string[] = [];
+  const reviews: string[][] = [];
   const building: BuildingBridge = {
     design: (brief, tags) => {
       calls.push(`${brief}:${tags ?? '-'}`);
-      return 'accepted：设计任务 t1（蓝图 b1）已开始';
+      return 'accepted：会话 session-1（蓝图 b1）已开始';
     },
-    rework: (blueprint) => `accepted：返工 ${blueprint} 已开始`,
-    cancel: (task) => task === 't1',
-    list: () => 'b1 5x9x5 · 120 格',
+    send: (sessionId, instructions) => {
+      calls.push(`${sessionId}:${instructions}`);
+      return 'accepted：已打回 session-1';
+    },
+    review: async (sessionId, previewArgs) => {
+      reviews.push([...(previewArgs ?? [])]);
+      return { text: `审稿 ${sessionId}`, images: [{ data: 'aW1n', mimeType: 'image/png' }] };
+    },
+    accept: (sessionId) => sessionId === 'session-1' ? '已接受 session-1' : '不能接受',
+    cancel: (sessionId) => sessionId === 'session-1',
+    list: () => 'session-1 b1 revision 1 awaiting_review',
   };
   const { start } = await setup(new MemoryStorage(), building);
   const baseline = await start();
-  assert.equal(baseline.toolNames.length, 20);
-  assert.match(await baseline.runner.toolText('DesignBuild', { brief: '小塔', descriptions: '设计小塔' }), /设计任务 t1/);
+  assert.equal(baseline.toolNames.length, 22);
+  assert.match(await baseline.runner.toolText('DesignBuild', { brief: '小塔', descriptions: '设计小塔' }), /session-1/);
   assert.deepEqual(calls, ['小塔:-']);
-  assert.equal(
-    await baseline.runner.toolText('CancelDesign', { task: 't1', descriptions: '取消它' }),
-    '已取消设计任务 t1',
-  );
-  assert.equal(await baseline.runner.toolText('ListBlueprints', { descriptions: '看看蓝图' }), 'b1 5x9x5 · 120 格');
+  assert.match(await baseline.runner.toolText('SendToSubagent', { sessionId: 'session-1', instructions: '屋顶改深色', descriptions: '打回修改' }), /已打回/);
+  const review = await baseline.runner.tool('ReviewBuild', { sessionId: 'session-1', descriptions: '审稿' });
+  assert.match(review.text, /审稿 session-1/);
+  assert.equal(review.images?.[0].data, 'aW1n');
+  await baseline.runner.toolText('ReviewBuild', {
+    sessionId: 'session-1',
+    preview: JSON.stringify(['preview', 'plan.schem', '-o', 'detail.png', '--persp']),
+    descriptions: '看细节',
+  });
+  assert.deepEqual(reviews.at(-1), ['preview', 'plan.schem', '-o', 'detail.png', '--persp']);
+  assert.equal(await baseline.runner.toolText('AcceptBuild', { sessionId: 'session-1', descriptions: '接受' }), '已接受 session-1');
+  assert.equal(await baseline.runner.toolText('CancelDesign', { sessionId: 'session-1', descriptions: '取消它' }), '已取消会话 session-1');
+  assert.match(await baseline.runner.toolText('ListBlueprints', { descriptions: '看看蓝图' }), /revision 1/);
   await baseline.close();
 });
 
-test('建筑：没配置 mc-build 时，6 个建筑工具不出现在工具表里', async () => {
+test('建筑：没配置 mc-build 时，8 个建筑工具不出现在工具表里', async () => {
   const { start } = await setup();
   const baseline = await start();
   assert.equal(baseline.toolNames.length, 14);

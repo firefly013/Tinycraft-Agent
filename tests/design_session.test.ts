@@ -85,13 +85,18 @@ test('设计会话：写脚本 → 编译 → 交卷，产出尺寸/材料/标�
     model: { provider: 'faux', modelId: faux.getModel().id },
     blueprintsRoot: root,
     workspaceRoot: base,
+    storagePath: join(base, 'session.db'),
+    sessionId: 'session-test',
     mcBuild: fakeMcBuild(),
     mc: () => '1.21.4',
   });
   const input: DesignInput = {
+    sessionId: 'session-test',
     blueprintDir: blueprint.dir,
     blueprintId: blueprint.id,
     brief: '放一块石头',
+    message: '放一块石头',
+    revision: 1,
     signal: new AbortController().signal,
   };
   const result = await session.run(input);
@@ -126,6 +131,8 @@ test('设计会话：不确定时先查 CLI 教程，并能完整拿到教程输
     model: { provider: 'faux', modelId: faux.getModel().id },
     blueprintsRoot: root,
     workspaceRoot: base,
+    storagePath: join(base, 'session.db'),
+    sessionId: 'session-tutorial',
     mcBuild: { ...fakeMcBuild(), run: async () => ({ code: 0, stdout: tutorial, stderr: '' }) },
     mc: () => '1.21.4',
     hooks: [
@@ -134,14 +141,66 @@ test('设计会话：不确定时先查 CLI 教程，并能完整拿到教程输
     ],
   });
   const result = await session.run({
+    sessionId: 'session-tutorial',
     blueprintDir: blueprint.dir,
     blueprintId: blueprint.id,
     brief: '测试教程查询',
+    message: '测试教程查询',
+    revision: 1,
     signal: new AbortController().signal,
   });
   assert.ok(result != null);
   assert.equal(promptSeen, true, '系统提示必须要求不确定时先查教程');
   assert.ok(seen.includes(tutorial));
+  rmSync(base, { recursive: true, force: true });
+});
+
+test('设计会话：SQLite 持久化后，第二次运行继续第一次对话', async () => {
+  const base = mkdtempSync(join(tmpdir(), 'tc-design-persist-'));
+  const root = join(base, 'blueprints');
+  const blueprint = createBlueprint(root, '持久化小塔', { mc: '1.21.4' });
+  const storagePath = join(base, 'session.db');
+  const faux = fauxProvider();
+  const models = createModels();
+  models.setProvider(faux.provider);
+  let secondRequest = '';
+
+  const makeSession = () => createDesignSession({
+    models,
+    model: { provider: 'faux', modelId: faux.getModel().id },
+    blueprintsRoot: root,
+    workspaceRoot: base,
+    storagePath,
+    sessionId: 'session-persist',
+    mcBuild: fakeMcBuild(),
+    mc: () => '1.21.4',
+    hooks: [hook(GenerationTask, { beforeRequest: (request) => { secondRequest = JSON.stringify(request.messages); return undefined; } })],
+  });
+  const input = {
+    sessionId: 'session-persist',
+    blueprintDir: blueprint.dir,
+    blueprintId: blueprint.id,
+    brief: '放一块石头',
+    message: '放一块石头',
+    revision: 1,
+    signal: new AbortController().signal,
+  };
+
+  faux.setResponses([
+    fauxAssistantMessage([fauxToolCall('writeScript', { content: "builder.set(0, 0, 0, 'stone');" })], { stopReason: 'toolUse' }),
+    fauxAssistantMessage([fauxToolCall('finish', { summary: '第一次交付', tags: '', reusable: false })], { stopReason: 'toolUse' }),
+  ]);
+  const first = await makeSession().run(input);
+  assert.equal(first?.summary, '第一次交付');
+
+  faux.setResponses([
+    fauxAssistantMessage([fauxToolCall('writeScript', { content: "builder.set(0, 0, 0, 'stone'); builder.set(1, 0, 0, 'stone');" })], { stopReason: 'toolUse' }),
+    fauxAssistantMessage([fauxToolCall('finish', { summary: '第二次交付', tags: '', reusable: false })], { stopReason: 'toolUse' }),
+  ]);
+  const second = await makeSession().run({ ...input, brief: '', message: '在旁边再加一块石头', revision: 2 });
+  assert.equal(second?.summary, '第二次交付');
+  assert.ok(secondRequest.includes('放一块石头'), '第二次请求必须保留第一次需求');
+  assert.ok(secondRequest.includes('第一次交付'), '第二次请求必须保留第一次交付记录');
   rmSync(base, { recursive: true, force: true });
 });
 
@@ -167,14 +226,19 @@ test('设计会话：mc-build 的 stdout/stderr 超过旧上限仍完整返回',
     model: { provider: 'faux', modelId: faux.getModel().id },
     blueprintsRoot: root,
     workspaceRoot: base,
+    storagePath: join(base, 'session.db'),
+    sessionId: 'session-long-output',
     mcBuild: { ...fakeMcBuild(), run: async () => ({ code: 0, stdout, stderr }) },
     mc: () => '1.21.4',
     hooks: [hook(ToolTask, { afterTool: (call, result) => { if (call.name === 'runMcBuild') seen = result.output?.map((part) => part.type === 'text' ? part.text : '').join('') ?? ''; return undefined; } })],
   });
   const result = await session.run({
+    sessionId: 'session-long-output',
     blueprintDir: blueprint.dir,
     blueprintId: blueprint.id,
     brief: '测试长输出',
+    message: '测试长输出',
+    revision: 1,
     signal: new AbortController().signal,
   });
   assert.ok(result != null);

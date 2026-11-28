@@ -1,5 +1,5 @@
 /**
- * 一个 bot 的完整装配：会话 + 装配线 + 身体 + 投递 + 三个本地工具。
+ * 一个 bot 的完整装配：会话 + 装配线 + 身体 + 投递 + 本地工具。
  *
  * 身体是注入的（真机是 mineflayer，测试是假的）；这里只负责接线，
  * 不放任何判断。
@@ -14,6 +14,7 @@ import { assertUniquePriorities } from '../core/reflex.ts';
 import type { ReflexSpec } from '../core/reflex.ts';
 import type { TraceNote } from '../core/trace.ts';
 import type { Body } from '../shared/body.ts';
+import type { ToolOutcome } from '../shared/tools.ts';
 import { createIntakeDeps } from './bridge.ts';
 import { GoalDoc } from './goal.ts';
 import { createRequestLog, loggingHooks } from './log.ts';
@@ -50,18 +51,22 @@ export interface BodyWithReflex extends Body {
   reflex?: (name: string, signal: AbortSignal) => Promise<void>;
 }
 
-/** 建筑：设计任务的外壳与蓝图查询；不配就是没有这 6 个工具。 */
+/** 建筑：持久子模型会话、审稿与蓝图查询；不配就是没有这 8 个工具。 */
 export interface BuildingBridge {
   design(brief: string, tags?: string): string;
-  rework(blueprint: string, notes: string): string;
-  cancel(task: string): boolean;
+  send(sessionId: string, instructions: string): string;
+  review(sessionId: string, previewArgs?: readonly string[]): Promise<ToolOutcome>;
+  accept(sessionId: string): string;
+  cancel(sessionId: string): boolean;
   list(query?: string): string;
 }
 
-/** 建筑相关的 6 个工具：没配置建筑时整组不交给模型。 */
+/** 建筑相关的 8 个工具：没配置建筑时整组不交给模型。 */
 export const BUILDING_TOOLS: ReadonlySet<string> = new Set([
   'DesignBuild',
-  'ReworkDesign',
+  'ReviewBuild',
+  'SendToSubagent',
+  'AcceptBuild',
   'CancelDesign',
   'ListBlueprints',
   'BuildAt',
@@ -244,14 +249,27 @@ export async function startBaseline(options: BaselineOptions): Promise<Baseline>
               text: options.building!.design(String(args.brief), args.tags == null ? undefined : String(args.tags)),
               terminate: true,
             }),
-            ReworkDesign: (args: Record<string, unknown>) => ({
-              text: options.building!.rework(String(args.blueprint), String(args.notes)),
+            ReviewBuild: (args: Record<string, unknown>) => {
+              if (args.preview == null) return options.building!.review(String(args.sessionId));
+              try {
+                const parsed = JSON.parse(String(args.preview)) as unknown;
+                if (!Array.isArray(parsed) || !parsed.every((item) => typeof item === 'string')) {
+                  return { text: 'preview 必须是 JSON 字符串数组' };
+                }
+                return options.building!.review(String(args.sessionId), parsed);
+              } catch (error: unknown) {
+                return { text: `preview JSON 解析失败：${error instanceof Error ? error.message : String(error)}` };
+              }
+            },
+            SendToSubagent: (args: Record<string, unknown>) => ({
+              text: options.building!.send(String(args.sessionId), String(args.instructions)),
               terminate: true,
             }),
+            AcceptBuild: (args: Record<string, unknown>) => options.building!.accept(String(args.sessionId)),
             CancelDesign: (args: Record<string, unknown>) =>
-              options.building!.cancel(String(args.task))
-                ? `已取消设计任务 ${String(args.task)}`
-                : `没有在跑的设计任务：${String(args.task)}`,
+              options.building!.cancel(String(args.sessionId))
+                ? `已取消会话 ${String(args.sessionId)}`
+                : `没有在跑的会话：${String(args.sessionId)}`,
             ListBlueprints: (args: Record<string, unknown>) =>
               options.building!.list(args.query == null ? undefined : String(args.query)),
           }),

@@ -34,6 +34,14 @@ export interface ToolPrompts {
   params?: Record<string, string>;
 }
 
+export const BUILDING_WORKFLOW = [
+  '建筑交付与审稿：',
+  '1. DesignBuild 返回 sessionId；design.done 事件会带 sessionId 与 revision。',
+  '2. 施工前先 ReviewBuild(sessionId)，看完整报告、ASCII 和图片。',
+  '3. 不满意就 SendToSubagent(sessionId, instructions)，等同一会话交付下一 revision，再审稿。',
+  '4. 不要自己改脚本或蓝图；只有子模型修改。满意后 AcceptBuild(sessionId)，再 BuildAt。',
+].join('\n');
+
 export const TOOL_TEXT: Readonly<Record<string, ToolPrompts>> = {
   goTo: {
     description: '走到指定坐标。',
@@ -140,27 +148,40 @@ export const TOOL_TEXT: Readonly<Record<string, ToolPrompts>> = {
     },
   },
   DesignBuild: {
-    description: '派子模型设计建筑：它自己写脚本、编译、自检，产出蓝图；立刻返回任务 id，完成会用事件叫你。',
+    description: '派子模型设计建筑：立刻返回 sessionId，完成事件带 revision；之后可审稿或按 ID 打回。',
     params: {
       brief: '要建什么：尺寸、风格、材料、用途',
       tags: '可选；逗号分隔的标签，方便以后检索复用',
     },
   },
-  ReworkDesign: {
-    description: '让子模型在已有蓝图上修改，不新开一份。',
+  ReviewBuild: {
+    description: '审稿：重新编译并返回完整 SELFCHECK、check、ASCII 与六视角 PNG；可追加任意 preview 参数。',
     params: {
-      blueprint: '蓝图 id',
-      notes: '要改什么',
+      sessionId: '子模型会话 ID',
+      preview: '可选 JSON 字符串数组，如 ["preview","plan.schem","-o","detail.png","--crop","0,0,0,2,2,2","--persp"]',
+    },
+  },
+  SendToSubagent: {
+    description: '不满意时把具体修改意见打回同一子模型会话，等新 revision 交付。',
+    params: {
+      sessionId: '子模型会话 ID',
+      instructions: '明确、可执行的修改意见',
+    },
+  },
+  AcceptBuild: {
+    description: '接受当前 revision；接受后再施工。',
+    params: {
+      sessionId: '子模型会话 ID',
     },
   },
   CancelDesign: {
-    description: '取消一个正在跑的设计任务；不影响身体动作。',
+    description: '取消一个正在跑的子模型会话；不影响身体动作。',
     params: {
-      task: 'DesignBuild 返回的任务 id',
+      sessionId: '子模型会话 ID',
     },
   },
   ListBlueprints: {
-    description: '列出蓝图：id、尺寸、格数、标签、是否可复用。',
+    description: '列出建筑会话：sessionId、蓝图、revision、状态与摘要。',
     params: {
       query: '可选；按 id/brief/tag 文本过滤',
     },

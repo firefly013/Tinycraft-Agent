@@ -38,8 +38,8 @@ test('core 只 import core 自己或 node:', () => {
   }
 });
 
-test('工具面：20 个，文案 ≤ 4000 字符', () => {
-  assert.equal(CATALOG.length, 20);
+test('工具面：22 个，文案 ≤ 4000 字符', () => {
+  assert.equal(CATALOG.length, 22);
   let chars = 0;
   for (const tool of CATALOG) {
     chars += tool.description.length;

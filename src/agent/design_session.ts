@@ -1,21 +1,22 @@
 /**
- * 一次真实的设计会话：第二个 pi-durable Harness + 一组窄工具。
+ * 一次真实的设计运行：按需打开持久 SQLite 会话 + 一组窄工具。
  *
  * 架构师不“重新发明” mc-build 的接口：它拿一个 `runMcBuild(args)`，把
  * build / preview / check / assets 原样透传。这样 mc-build 的每一种能力
  * （任意相机、裁剪、透视、标尺、分组审计、构件扫描）都直接可用，
  * 也不会随 mc-build 增加参数而过时。
  */
-import { readFileSync, statSync, writeFileSync } from 'node:fs';
-import { join, resolve, sep } from 'node:path';
+import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve, sep } from 'node:path';
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
-import { MemoryStorage, defineTool } from '@earendil-works/pi-durable';
+import { defineTool } from '@earendil-works/pi-durable';
+import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import type { HookRegistration, ModelRef, ToolRegistration } from '@earendil-works/pi-durable';
 import type { ModelThinkingLevel, Models } from '@earendil-works/pi-ai';
 import type { BuildSummary, McBuild } from '../body/mcbuild.ts';
 import { listBlueprints } from './blueprints.ts';
 import { UNLIMITED_OUTPUT } from '../shared/output.ts';
-import type { DesignInput, DesignResult, DesignSession } from './architect.ts';
+import type { BuildDelivery, DesignInput, DesignSession } from './architect.ts';
 import { openRuntime } from './runtime.ts';
 
 export interface DesignSessionDeps {
@@ -23,6 +24,10 @@ export interface DesignSessionDeps {
   model: ModelRef;
   thinkingLevel?: ModelThinkingLevel;
   blueprintsRoot: string;
+  /** 持久会话数据库；同一 Session ID 多次运行必须指向同一路径。 */
+  storagePath: string;
+  /** 持久会话 ID，用于运行时命名与追踪。 */
+  sessionId: string;
   /** 允许架构师读写的根目录（`bots/<name>/build`）。 */
   workspaceRoot: string;
   mcBuild: McBuild;
@@ -122,7 +127,7 @@ export function createDesignSession(deps: DesignSessionDeps): DesignSession {
   };
 
   return {
-    async run(input: DesignInput): Promise<DesignResult | null> {
+    async run(input: DesignInput): Promise<BuildDelivery | null> {
       const dir = resolve(input.blueprintDir);
       const scriptPath = join(dir, 'script.js');
       const schemPath = join(dir, 'plan.schem');
@@ -162,7 +167,7 @@ export function createDesignSession(deps: DesignSessionDeps): DesignSession {
         }),
         defineTool({
           name: 'runMcBuild',
-          description: '直接调用 mc-build：build / preview / check / assets，参数原样透传。',
+          description: '直接调用 mc-build：tutorial / build / preview / check / assets，参数原样透传。',
           parameters: {
             type: 'object',
             properties: { args: { type: 'array', items: { type: 'string' } } },
@@ -282,34 +287,43 @@ export function createDesignSession(deps: DesignSessionDeps): DesignSession {
 
       const fullTools = tools.map((tool) => ({ ...tool, outputLimits: UNLIMITED_OUTPUT }));
 
-      const runtime = await openRuntime({
-        models: deps.models,
-        model: deps.model,
-        ...(deps.thinkingLevel == null ? {} : { thinkingLevel: deps.thinkingLevel }),
-        storage: new MemoryStorage(),
-        systemPrompt: () => architectPrompt(vision),
-        tools: fullTools,
-        hooks: deps.hooks ?? [],
-        name: `architect:${input.blueprintId}`,
-      });
-
+      mkdirSync(dirname(deps.storagePath), { recursive: true });
+      const storage = await openNodeSqliteStorage(deps.storagePath);
+      let runtime: Awaited<ReturnType<typeof openRuntime>> | null = null;
       const abort = (): void => {
-        void runtime.conversation.abort(BACKGROUND_CONTEXT);
+        void runtime?.conversation.abort(BACKGROUND_CONTEXT);
       };
       if (input.signal.aborted) abort();
       else input.signal.addEventListener('abort', abort, { once: true });
 
       try {
-        const content = input.notes == null ? input.brief : `${input.brief}\n\n返工要求：${input.notes}`;
+        runtime = await openRuntime({
+          models: deps.models,
+          model: deps.model,
+          ...(deps.thinkingLevel == null ? {} : { thinkingLevel: deps.thinkingLevel }),
+          storage,
+          systemPrompt: () => architectPrompt(vision),
+          tools: fullTools,
+          hooks: deps.hooks ?? [],
+          name: `architect:${deps.sessionId}`,
+        });
+        // 进程异常退出会留下 running 任务；重开同一会话时先清理陈旧忙碌状态。
+        await runtime.conversation.abort(BACKGROUND_CONTEXT, { background: true });
+        if (input.signal.aborted) throw new Error('aborted');
+        const content = input.message;
         const submission = await runtime.conversation.submit(
           { type: 'input', content, whenBusy: 'reject' },
           BACKGROUND_CONTEXT,
         );
         await submission.wait(BACKGROUND_CONTEXT);
       } finally {
-        note(`会话结束：${input.blueprintId}`);
+        note(`会话结束：${deps.sessionId}`);
         input.signal.removeEventListener('abort', abort);
-        await runtime.close();
+        try {
+          await runtime?.close();
+        } finally {
+          await storage.close(BACKGROUND_CONTEXT);
+        }
       }
 
       const finished = state.finished;
@@ -333,6 +347,7 @@ export function createDesignSession(deps: DesignSessionDeps): DesignSession {
         size: lastBuild.size,
         blocks: lastBuild.blocks,
         materials,
+        revision: input.revision,
       };
     },
   };

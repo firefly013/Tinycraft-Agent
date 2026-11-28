@@ -1,7 +1,7 @@
 /**
  * 装配：storage + models + 扩展 → 一个可驱动的会话。
  *
- * v0-a 用 MemoryStorage；落盘换成 sqlite 是同一个接口（下一轮接）。
+ * 主模型与建筑子模型都使用 SQLite；MemoryStorage 只留给测试或临时会话。
  */
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
 import { Harness, createRegistry, defineExtension } from '@earendil-works/pi-durable';

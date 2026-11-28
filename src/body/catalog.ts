@@ -129,16 +129,28 @@ const DECLARATIONS: readonly Declaration[] = [
     params: { brief: { type: 'string' }, tags: { type: 'string', optional: true } },
   },
   {
-    name: 'ReworkDesign',
+    name: 'ReviewBuild',
+    mode: 'sync',
+    action: false,
+    params: { sessionId: { type: 'string' }, preview: { type: 'string', optional: true } },
+  },
+  {
+    name: 'SendToSubagent',
     mode: 'async',
     action: false,
-    params: { blueprint: { type: 'string' }, notes: { type: 'string' } },
+    params: { sessionId: { type: 'string' }, instructions: { type: 'string' } },
+  },
+  {
+    name: 'AcceptBuild',
+    mode: 'sync',
+    action: false,
+    params: { sessionId: { type: 'string' } },
   },
   {
     name: 'CancelDesign',
     mode: 'sync',
     action: false,
-    params: { task: { type: 'string' } },
+    params: { sessionId: { type: 'string' } },
   },
   {
     name: 'ListBlueprints',

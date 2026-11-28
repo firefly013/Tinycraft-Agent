@@ -1,112 +1,141 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { createArchitecture } from '../src/agent/architect.ts';
-import type { DesignEvent, DesignInput, DesignResult, DesignSession } from '../src/agent/architect.ts';
-import { createBlueprint, readBlueprint } from '../src/agent/blueprints.ts';
+import type { BuildDelivery } from '../src/agent/build_sessions.ts';
+import type { DesignEvent, DesignInput, DesignSession } from '../src/agent/architect.ts';
+import { readBlueprint } from '../src/agent/blueprints.ts';
+import { readBuildSession } from '../src/agent/build_sessions.ts';
 
-const OK: DesignResult = {
+const OK: BuildDelivery = {
   summary: '一座小塔',
   tags: ['tower', 'stone'],
   reusable: true,
   size: { x: 5, y: 9, z: 5 },
   blocks: 120,
   materials: { stone: 120 },
+  revision: 1,
 };
 
-function setup(sessionFor: (id: string) => DesignSession) {
+function setup(sessionFor: (sessionId: string, blueprintId: string) => DesignSession) {
   const base = mkdtempSync(join(tmpdir(), 'tc-arch-'));
-  const root = join(base, 'blueprints');
+  const blueprintsRoot = join(base, 'blueprints');
+  const sessionsRoot = join(base, 'sessions');
   const events: DesignEvent[] = [];
   const architecture = createArchitecture({
-    blueprintsRoot: root,
+    blueprintsRoot,
+    sessionsRoot,
     mc: () => '1.21.4',
     createSession: sessionFor,
     onEvent: (event) => events.push(event),
   });
-  return { base, root, events, architecture, cleanup: () => rmSync(base, { recursive: true, force: true }) };
+  return { base, blueprintsRoot, sessionsRoot, events, architecture, cleanup: () => rmSync(base, { recursive: true, force: true }) };
 }
 
-function instant(result: DesignResult | null): DesignSession {
+function instant(result: BuildDelivery | null): DesignSession {
   return { run: async () => result };
 }
 
-test('设计完成：写回 meta、发 done 事件、状态变 done', async () => {
+test('设计交付：稳定 Session ID、awaiting_review、revision 1、done 事件带 ID', async () => {
   const env = setup(() => instant(OK));
   const task = env.architecture.start('小塔', ['tower']);
+  assert.match(task.sessionId, /^session-/);
   assert.equal(task.state, 'running');
-  assert.ok(existsSync(join(env.root, task.blueprintId, 'meta.json')));
   await env.architecture.settle();
 
-  const meta = readBlueprint(env.root, task.blueprintId);
+  const meta = readBlueprint(env.blueprintsRoot, task.blueprintId);
   assert.ok(meta != null);
   assert.deepEqual(meta.size, { x: 5, y: 9, z: 5 });
   assert.equal(meta.blocks, 120);
-  assert.equal(meta.reusable, true);
-  assert.deepEqual(meta.tags, ['tower', 'stone']);
-  assert.equal(meta.mc, '1.21.4');
-  assert.equal(env.architecture.list()[0].state, 'done');
+  const session = readBuildSession(env.sessionsRoot, task.sessionId);
+  assert.equal(session?.state, 'awaiting_review');
+  assert.equal(session?.revision, 1);
+  assert.equal(session?.lastDelivery?.summary, '一座小塔');
   assert.equal(env.events.length, 1);
   assert.equal(env.events[0].kind, 'done');
-  assert.match(env.events[0].text, /设计完成：/);
+  assert.equal(env.events[0].sessionId, task.sessionId);
+  assert.equal(env.events[0].revision, 1);
   env.cleanup();
 });
 
-test('设计失败：不发蓝图、状态 failed、事件带原因', async () => {
+test('设计失败：状态 failed，事件带原因，不增加 revision', async () => {
   const env = setup(() => instant(null));
   const task = env.architecture.start('小塔');
   await env.architecture.settle();
-  assert.equal(env.architecture.list()[0].state, 'failed');
+  const session = readBuildSession(env.sessionsRoot, task.sessionId);
+  assert.equal(session?.state, 'failed');
+  assert.equal(session?.revision, 0);
   assert.equal(env.events[0].kind, 'failed');
   assert.match(env.events[0].text, /没有通过自检/);
-  assert.equal(readBlueprint(env.root, task.blueprintId)?.blocks, 0);
   env.cleanup();
 });
 
 test('取消：abort 正在跑的会话，状态 cancelled，不发 done', async () => {
   const env = setup(() => ({
     run: (input: DesignInput) =>
-      new Promise<DesignResult | null>((_resolve, reject) => {
+      new Promise<BuildDelivery | null>((_resolve, reject) => {
         input.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
       }),
   }));
   const task = env.architecture.start('大教堂');
-  assert.equal(env.architecture.cancel(task.taskId), true);
+  assert.equal(env.architecture.cancel(task.sessionId), true);
   await env.architecture.settle();
-  assert.equal(env.architecture.list()[0].state, 'cancelled');
+  assert.equal(readBuildSession(env.sessionsRoot, task.sessionId)?.state, 'cancelled');
   assert.equal(env.events[0].kind, 'cancelled');
   assert.equal(env.architecture.cancel('nope'), false);
   env.cleanup();
 });
 
-test('返工：同一个蓝图目录、把备注交给会话、任务 id 不与原任务重复', async () => {
-  const seen: (string | undefined)[] = [];
-  const env = setup(() => ({
+test('打回：同一 Session ID 重开，revision 递增，意见追加到原会话', async () => {
+  const calls: Array<{ sessionId: string; blueprintId: string; message: string; revision: number }> = [];
+  const env = setup((sessionId, blueprintId) => ({
     run: async (input: DesignInput) => {
-      seen.push(input.notes);
-      return OK;
+      calls.push({ sessionId, blueprintId, message: input.message, revision: input.revision });
+      return { ...OK, summary: `第${input.revision}版`, revision: input.revision };
     },
   }));
-  const blueprint = createBlueprint(env.root, '旧塔');
-  const task = env.architecture.rework(blueprint.id, '屋顶换成深色木');
-  assert.notEqual(task.taskId, blueprint.id);
-  assert.equal(task.blueprintId, blueprint.id);
+  const first = env.architecture.start('旧塔');
   await env.architecture.settle();
-  assert.deepEqual(seen, ['屋顶换成深色木']);
-  assert.equal(env.architecture.list().at(-1)?.state, 'done');
+  const second = env.architecture.send(first.sessionId, '屋顶换成深色木');
+  assert.equal(second.sessionId, first.sessionId);
+  assert.equal(second.blueprintId, first.blueprintId);
+  assert.equal(second.state, 'running');
+  await env.architecture.settle();
+
+  assert.deepEqual(calls.map((call) => call.message), ['旧塔', '屋顶换成深色木']);
+  assert.deepEqual(calls.map((call) => call.revision), [1, 2]);
+  assert.ok(calls.every((call) => call.sessionId === first.sessionId && call.blueprintId === first.blueprintId));
+  const session = readBuildSession(env.sessionsRoot, first.sessionId);
+  assert.equal(session?.state, 'awaiting_review');
+  assert.equal(session?.revision, 2);
+  assert.equal(session?.lastDelivery?.summary, '第2版');
   env.cleanup();
 });
 
-test('返工不存在的蓝图：明确报错', () => {
+test('运行中打回拒绝；接受只允许 awaiting_review', async () => {
+  let release: (() => void) | undefined;
+  const env = setup(() => ({ run: async () => { await new Promise<void>((resolve) => { release = resolve; }); return OK; } }));
+  const task = env.architecture.start('塔');
+  assert.throws(() => env.architecture.send(task.sessionId, '改'), /正在运行/);
+  release?.();
+  await env.architecture.settle();
+  assert.equal(env.architecture.accept(task.sessionId), true);
+  assert.equal(readBuildSession(env.sessionsRoot, task.sessionId)?.state, 'accepted');
+  assert.equal(env.architecture.accept(task.sessionId), false);
+  env.cleanup();
+});
+
+test('打回不存在或不存在的会话：明确报错', () => {
   const env = setup(() => instant(OK));
-  assert.throws(() => env.architecture.rework('missing', '改'), /没有这个蓝图/);
+  assert.throws(() => env.architecture.send('missing', '改'), /没有这个会话/);
+  assert.throws(() => env.architecture.accept('missing'), /没有这个会话/);
   env.cleanup();
 });
 
-test('并发：两个设计任务同时跑，各自完成', async () => {
+test('并发：两个会话同时跑，各自完成', async () => {
   let active = 0;
   let peak = 0;
   const env = setup(() => ({
@@ -122,9 +151,6 @@ test('并发：两个设计任务同时跑，各自完成', async () => {
   env.architecture.start('塔 B');
   await env.architecture.settle();
   assert.equal(peak, 2);
-  assert.deepEqual(
-    env.architecture.list().map((task) => task.state),
-    ['done', 'done'],
-  );
+  assert.deepEqual(env.architecture.list().map((task) => task.state), ['awaiting_review', 'awaiting_review']);
   env.cleanup();
 });

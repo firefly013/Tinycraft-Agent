@@ -18,12 +18,14 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
-import { INIT_MESSAGE, SYSTEM_PROMPT } from './prompts.ts';
+import { BUILDING_WORKFLOW, INIT_MESSAGE, SYSTEM_PROMPT } from './prompts.ts';
 import { startAdmin } from './agent/admin.ts';
 import type { AdminServer } from './agent/admin.ts';
 import { createArchitecture } from './agent/architect.ts';
 import type { Architecture } from './agent/architect.ts';
-import { describeBlueprint, listBlueprints } from './agent/blueprints.ts';
+import { describeBlueprint, readBlueprint } from './agent/blueprints.ts';
+import { buildSessionStoragePath } from './agent/build_sessions.ts';
+import { reviewBuild } from './agent/build_review.ts';
 import { createDesignSession } from './agent/design_session.ts';
 import { createTokenBudget, DEFAULT_TOKEN_BUDGET } from './agent/budget.ts';
 import { splitChatText, startBaseline } from './agent/bot.ts';
@@ -200,16 +202,19 @@ let notify: ((event: LogEvent) => void) | null = null;
 // 控制面在 baseline 之后才有；快照的 currentAction 用闭包延后取。
 let runnerRef: Runner | null = null;
 
-// 建筑：只在配置了 mc-build 时启用；否则这 6 个工具整组不给模型。
+// 建筑：只在配置了 mc-build 时启用；否则这 8 个工具整组不给模型。
 const buildConfig = bot.config.build;
 const mcBuildDir = env.MC_BUILD_DIR ?? buildConfig?.mcBuildDir;
 let buildVersion: string | null = version ?? null;
 let architecture: Architecture | null = null;
 let blueprintsRoot: string | null = null;
+let sessionsRoot: string | null = null;
 let mcBuild: ReturnType<typeof createMcBuild> | null = null;
 if (mcBuildDir != null && mcBuildDir !== '') {
   blueprintsRoot = resolve(`./${bot.dir}`, 'build', 'blueprints');
+  sessionsRoot = resolve(`./${bot.dir}`, 'build', 'sessions');
   mkdirSync(blueprintsRoot, { recursive: true });
+  mkdirSync(sessionsRoot, { recursive: true });
   mcBuild = createMcBuild({ dir: resolve(mcBuildDir) });
   const architectProviderId = buildConfig?.architect?.provider ?? providerId;
   const architectModelId = buildConfig?.architect?.model ?? modelId;
@@ -219,13 +224,16 @@ if (mcBuildDir != null && mcBuildDir !== '') {
       : (await openProvider(loadProvider(configRoot, architectProviderId), architectProviderId, configRoot)).models;
   architecture = createArchitecture({
     blueprintsRoot,
+    sessionsRoot,
     mc: () => buildVersion,
-    createSession: () =>
+    createSession: (sessionId, blueprintId) =>
       createDesignSession({
         models: architectModels,
         model: { provider: architectProviderId, modelId: architectModelId },
         thinkingLevel,
         blueprintsRoot: blueprintsRoot as string,
+        storagePath: buildSessionStoragePath(sessionsRoot as string, sessionId),
+        sessionId,
         workspaceRoot: resolve(`./${bot.dir}`, 'build'),
         mcBuild: mcBuild as ReturnType<typeof createMcBuild>,
         mc: () => buildVersion,
@@ -235,7 +243,7 @@ if (mcBuildDir != null && mcBuildDir !== '') {
         type: `design.${event.kind}`,
         kind: 'Model',
         level: 3,
-        payload: { taskId: event.taskId, blueprintId: event.blueprintId },
+        payload: { sessionId: event.sessionId, blueprintId: event.blueprintId, revision: event.revision },
         text: event.text,
         ts: Date.now(),
       });
@@ -243,31 +251,57 @@ if (mcBuildDir != null && mcBuildDir !== '') {
   });
 }
 
+const mainVision = models.getModel(providerId, modelId)?.input.includes('image') === true;
 const building: BuildingBridge | null =
-  architecture == null || blueprintsRoot == null
+  architecture == null || blueprintsRoot == null || sessionsRoot == null
     ? null
     : {
         design: (brief, tags) => {
           const task = architecture!.start(brief, tags == null ? undefined : [tags]);
-          return `accepted：设计任务 ${task.taskId}（蓝图 ${task.blueprintId}）已开始；完成后会用事件叫你。`;
+          return `accepted：会话 ${task.sessionId}（蓝图 ${task.blueprintId}）已开始；完成后会用事件叫你。`;
         },
-        rework: (blueprintId, notes) => {
+        send: (sessionId, instructions) => {
           try {
-            const task = architecture!.rework(blueprintId, notes);
-            return `accepted：返工任务 ${task.taskId} 已开始；完成后会用事件叫你。`;
+            const task = architecture!.send(sessionId, instructions);
+            return `accepted：已打回会话 ${task.sessionId}，目标 revision ${task.revision + 1}；完成后会用事件叫你。`;
           } catch (error: unknown) {
-            return `返工没开始：${error instanceof Error ? error.message : String(error)}`;
+            return `打回没开始：${error instanceof Error ? error.message : String(error)}`;
           }
         },
-        cancel: (taskId) => architecture!.cancel(taskId),
-        list: (query) => {
-          const found = listBlueprints(blueprintsRoot!, query == null ? {} : { text: query });
-          const lines = found.map(describeBlueprint);
-          const running = architecture!.list().filter((task) => task.state === 'running');
-          if (running.length > 0) {
-            lines.push(`进行中：${running.map((task) => `${task.taskId}（${(task.elapsedMs / 1000).toFixed(0)}s）`).join('、')}`);
+        review: async (sessionId, previewArgs) => {
+          const session = architecture!.get(sessionId);
+          if (session == null) return { text: `没有这个会话：${sessionId}` };
+          if (session.state === 'running') return { text: `会话 ${sessionId} 正在运行，暂不能审稿` };
+          return reviewBuild({
+            blueprintsRoot: blueprintsRoot!,
+            blueprintId: session.blueprintId,
+            sessionId,
+            revision: session.revision,
+            mcBuild: mcBuild!,
+            mc: () => buildVersion,
+            vision: mainVision,
+            ...(previewArgs == null ? {} : { previewArgs }),
+          });
+        },
+        accept: (sessionId) => {
+          try {
+            return architecture!.accept(sessionId) ? `已接受 ${sessionId}` : `${sessionId} 当前状态不能接受`;
+          } catch (error: unknown) {
+            return error instanceof Error ? error.message : String(error);
           }
-          return lines.length === 0 ? '（还没有蓝图）' : lines.join('\n');
+        },
+        cancel: (sessionId) => architecture!.cancel(sessionId),
+        list: (query) => {
+          const text = query?.toLowerCase();
+          const sessions = architecture!.list().filter((session) =>
+            text == null || `${session.sessionId} ${session.blueprintId} ${session.brief}`.toLowerCase().includes(text),
+          );
+          if (sessions.length === 0) return '（还没有建筑会话）';
+          return sessions.map((session) => {
+            const blueprint = readBlueprint(blueprintsRoot!, session.blueprintId);
+            const detail = blueprint == null ? `${session.blueprintId} 未编译` : describeBlueprint(blueprint);
+            return `${session.sessionId} ${detail} revision ${session.revision} ${session.state}`;
+          }).join('\n');
         },
       };
 
@@ -308,7 +342,7 @@ const baseline: Baseline = await startBaseline({
   thinkingLevel,
   storage,
   body,
-  systemPrompt: prompt,
+  systemPrompt: building == null ? prompt : `${prompt}\n\n${BUILDING_WORKFLOW}`,
   goal,
   reflexes: REFLEXES,
   ...(building == null ? {} : { building }),

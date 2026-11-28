@@ -15,6 +15,8 @@ export type ToolMode = 'sync' | 'async';
 /** 一次工具调用的结果：给模型看的文本 + 是否就此结束本轮。 */
 export interface ToolOutcome {
   text: string;
+  /** 可选的图片输出；审稿类工具用，主模型不支持图片时不要附加。 */
+  images?: readonly { data: string; mimeType: string }[];
   /**
    * true = 这一轮到此为止，不要再向模型发下一次请求。
    *

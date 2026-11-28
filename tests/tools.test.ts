@@ -60,3 +60,13 @@ test('注册给模型的工具没有输出长度上限', () => {
   assert.equal(tool?.outputLimits?.maxBytes, Infinity);
   assert.equal(tool?.outputLimits?.maxLines, Infinity);
 });
+
+test('工具回执同时保留文本与图片', async () => {
+  const [tool] = runnerTools({
+    tool: async () => ({ text: '审稿报告', images: [{ data: 'aW1n', mimeType: 'image/png' }] }),
+  }, [MINE]);
+  const result = await tool!.execute({ x: 1, y: 2, z: 3 }, {} as never, {} as never);
+  const output = result.output ?? [];
+  assert.deepEqual(output.map((part) => part.type), ['text', 'image']);
+  assert.equal(output[1].type === 'image' ? output[1].data : '', 'aW1n');
+});

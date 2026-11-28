@@ -43,10 +43,10 @@ Tinycraft-Agent 把自由度收得很小：**工具面最小、控制流显式�
 
 一个跑在真实 Minecraft Java 服务器上的最小 agent：
 
-- **工具面最小**：11 个动作原语 + 3 个流程工具；配置了 `mc-build` 后再多 6 个建筑工具。模型能做的事，就是它看到的事。
+- **工具面最小**：11 个动作原语 + 3 个流程工具；配置了 `mc-build` 后再多 8 个建筑工具。模型能做的事，就是它看到的。
 - **控制面显式**：谁在动身体、结果是否过期、被打断的动作怎么续做，全部落在一台纯函数状态机里，而不是散落在 prompt 和 `try/catch` 中。
 - **反射与模型解耦**：落地水、自动战斗、低血进食、空闲拾取由身体自己处理，不唤醒模型（但会在上下文里留一条记录），也不靠模型"记得"。
-- **会盖房子**：主模型只说"建什么、建在哪"，子模型自己写脚本、编译、看图、自检，把蓝图做出来再交给身体施工。
+- **会盖房子**：主模型派单、完整审稿、打回或接受；子模型按持久 Session ID 持续修改，身体负责施工。
 - **一切可观察**：每次控制面转移、每次请求、每条工具回执都有结构化日志与轨迹。
 
 代码按层切开：控制面是纯函数，工具只做输入校验，身体只负责读世界和执行。要改行为，就去改对应的那一层。
@@ -122,14 +122,16 @@ interface ControlState {
 
 | 工具 | 作用 |
 |---|---|
-| `DesignBuild` | 派一个子模型设计建筑：写脚本、编译、自检，产出蓝图目录 |
-| `ReworkDesign` | 在已有蓝图上改，不新开一份 |
+| `DesignBuild` | 派一个子模型设计建筑，返回稳定 `sessionId` |
+| `ReviewBuild` | 重新编译并返回完整 SELFCHECK、check、ASCII 与六视角 PNG；可追加任意 `preview` 参数看细节 |
+| `SendToSubagent` | 把具体修改意见打回同一会话，等下一 revision |
+| `AcceptBuild` | 接受当前 revision |
 | `BuildAt` | 把蓝图建到指定原点；有 op 自动用 `/fill`，没 op 逐块放置，`mode` 可强制 |
 | `UndoBuild` | 按施工前的现场快照还原 |
-| `ListBlueprints` | 列出蓝图（含可复用标记） |
-| `CancelDesign` | 取消一个后台设计任务，不影响身体 |
+| `ListBlueprints` | 列出会话、蓝图、revision、状态与可复用标记 |
+| `CancelDesign` | 取消一个正在跑的子模型会话，不影响身体 |
 
-设计任务不占身体、可以并发，`Stop` 不会停它们。完整流程见 [建筑](#建筑)。
+设计任务不占身体、可以并发，`Stop` 不会停它们。每个子模型会话写入 SQLite，交付后关闭运行时；主模型可按 Session ID 重新唤醒。完整流程见 [建筑](#建筑)。
 
 ## 建筑
 
@@ -137,16 +139,18 @@ interface ControlState {
 
 *上面这座 7×8×7、154 格的小屋，是子模型自己写脚本、编译、看图、改到 SELFCHECK 通过后交出来的；图是 `mc-build` 的 `main` 视角，顶部是渲染器的自检栏。*
 
-主模型只经手两头，中间交给子模型：
+主模型负责派单、审稿和施工，子模型负责设计：
 
-1. **设计**：`DesignBuild("一座带门廊的两层石屋")` 立刻返回任务 id；后台开一个独立会话，它写 `script.js`
-   → `mc-build build` → 看渲染图/ASCII → 按 SELFCHECK 的坐标簇改 → `finish`。会话不占身体、可以并发；
-   `Stop` 不会停它，只有 `CancelDesign` 会。
-2. **落盘**：蓝图是 `bots/<name>/build/blueprints/<id>/` 一个目录：`script.js`（可重跑）、
-   `plan.schem`（Sponge v3）、`meta.json`（尺寸/方块数/材料/tags/`reusable`）、六视图 PNG 与 ASCII。
-   组件复用就是把小蓝图 `pasteSchem` 进新脚本。
-3. **施工**：主模型审阅后 `BuildAt(blueprint, x, y, z)`。有 op 走 `/fill` + `/setblock`（每 10 条一批、
-   forceload、抽查），没 op 走逐块放置（单块失败跳过、连续 10 块停、每块检查点）。
+1. **设计**：`DesignBuild("一座带门廊的两层石屋")` 立刻返回 `sessionId`；子模型写 `script.js`
+   → `mc-build build` → 看渲染图/ASCII → 按 SELFCHECK 的坐标簇改 → `finish`。
+   每次运行打开 `bots/<name>/build/sessions/<sessionId>/conversation.db`，交付后关闭；上下文持久化。
+2. **审稿**：`ReviewBuild(sessionId)` 重新编译，返回完整 SELFCHECK、check、ASCII 和六视角 PNG；
+   还可通过 `preview` 参数追加裁剪、透视、标尺、分组高亮等细节审查。
+   不满意就 `SendToSubagent(sessionId, instructions)`，同一会话继续修改并交付下一 revision；
+   满意就 `AcceptBuild(sessionId)`。主模型不直接改脚本。
+3. **落盘**：蓝图是 `bots/<name>/build/blueprints/<id>/` 一个目录：`script.js`、`plan.schem`、
+   `meta.json`、六视图 PNG 与 ASCII。组件复用就是把小蓝图 `pasteSchem` 进新脚本。
+4. **施工**：`BuildAt(blueprint, x, y, z)`。有 op 走 `/fill` + `/setblock`，没 op 走逐块放置。
    施工前记现场快照，`UndoBuild` 按同一条路还原。
 
 子模型直接驱动 mc-build 的 CLI：不确定参数或 API 时先用 `tutorial --list` / `tutorial <章节>` 查内置完整教程；
@@ -154,7 +158,7 @@ interface ControlState {
 模型支持图片输入时还会把 PNG 读进上下文。
 
 启用：克隆 [mc-build](https://github.com/firefly013/mc-build)，设 `MC_BUILD_DIR=/path/to/mc-build`
-（或写进 `bot.json` 的 `build.mcBuildDir`）。没配置时这 6 个工具不会出现在工具表里。
+（或写进 `bot.json` 的 `build.mcBuildDir`）。没配置时这 8 个工具不会出现在工具表里。
 
 ## 安全边界
 
@@ -266,7 +270,7 @@ src/body/vision/  截图管线（prismarine-viewer + GL）
 src/prompts.ts    系统提示词与全部工具说明
 providers/        供应商配置（一个供应商一个 JSON）
 examples/         Bot 配置模板
-bots/<name>/      运行数据：配置、session.db、日志、截图、build/blueprints/ 蓝图
+bots/<name>/      运行数据：配置、session.db、日志、截图、build/blueprints/ 蓝图、build/sessions/ 子模型会话
 tests/            测试（node --test 直接跑 TypeScript）
 ```
 
