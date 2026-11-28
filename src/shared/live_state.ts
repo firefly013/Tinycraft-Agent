@@ -408,21 +408,9 @@ const SECTION_RENDERERS: Readonly<Record<string, (s: LiveState) => string[]>> = 
   },
   blocks: (s) => {
     if (s.blocks.length === 0) return ['关键方块：0 个'];
-    // 同名方块合并成一行：给数量 + 最近的一处坐标；模型要动手时用最近那处。
-    const groups = new Map<string, { count: number; nearest: LiveBlock }>();
-    for (const block of s.blocks) {
-      const found = groups.get(block.name);
-      if (found == null) groups.set(block.name, { count: 1, nearest: block });
-      else {
-        found.count += 1;
-        if (block.distance < found.nearest.distance) found.nearest = block;
-      }
-    }
-    const ordered = [...groups.values()].sort((a, b) => a.nearest.distance - b.nearest.distance);
     const lines = [`关键方块：${s.blocks.length} 个`];
-    for (const group of ordered) {
-      const n = group.nearest;
-      lines.push(`  ${n.name} ×${group.count}，最近 ${n.distance} 格，坐标 (${fmt(n.x)}, ${fmt(n.y)}, ${fmt(n.z)})`);
+    for (const block of [...s.blocks].sort((a, b) => a.distance - b.distance)) {
+      lines.push(`  ${block.name}，距离 ${block.distance} 格，坐标 (${fmt(block.x)}, ${fmt(block.y)}, ${fmt(block.z)})`);
     }
     return lines;
   },
@@ -464,7 +452,7 @@ export function renderLiveState(s: LiveState, options: { sections?: readonly str
   const lines: string[] = [];
   for (const key of options.sections ?? SNAPSHOT_SECTIONS) {
     const render = SECTION_RENDERERS[key];
-    if (render != null) lines.push(...render(s));
+    if (render != null) for (const line of render(s)) lines.push(line);
   }
   return lines.join('\n');
 }

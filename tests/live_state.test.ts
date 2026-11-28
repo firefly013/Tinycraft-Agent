@@ -127,7 +127,19 @@ test('感知明细超过 16 条时全部保留，不做聚合截断', () => {
   assert.equal(state.blocks.filter((block: { name: string }) => block.name === 'iron_ore').length, 21);
   const text = renderSnapshot(state);
   assert.match(text, /zombie#119/);
-  assert.match(text, /iron_ore ×21/);
+  assert.equal((text.match(/iron_ore，距离/g) ?? []).length, 21);
+});
+
+test('同名关键方块也保留每一处坐标，不做合并省略', () => {
+  const bot = fakeBot();
+  const baseAt = bot.blockAt;
+  bot.blockAt = (pos: { x: number; y: number; z: number }) => {
+    if ((pos.x === 8 || pos.x === 9) && pos.y === 62 && pos.z === -1) return { ...baseAt(pos), name: 'iron_ore' };
+    return baseAt(pos);
+  };
+  const text = renderSnapshot(snapshotFromBot(bot, null, null));
+  assert.match(text, /iron_ore，距离 [\d.]+ 格，坐标 \(8, 62, -1\)/);
+  assert.match(text, /iron_ore，距离 [\d.]+ 格，坐标 \(9, 62, -1\)/);
 });
 
 test('液体扫描：报告最近的水/岩浆源方块，跳过流动液体', () => {
@@ -168,7 +180,7 @@ test('渲染：模型能看到的关键行都在', () => {
   assert.match(text, /战力 6/);
   assert.match(text, /身体：.*战力 8/);
   assert.ok(text.length <= 800, `快照渲染 ${text.length} 字符，超出预算 800`);
-  assert.match(text, /iron_ore ×1，最近 4.1 格/);
+  assert.match(text, /iron_ore，距离 4.1 格，坐标 \(8, 62, -1\)/);
   assert.match(text, /动作 idle/);
   assert.match(text, /截图：无/);
 });
