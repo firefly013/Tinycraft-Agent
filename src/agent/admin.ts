@@ -42,7 +42,6 @@ interface Reply {
 }
 
 const MAX_BODY = 64 * 1024;
-const MAX_TAIL = 500;
 
 function readBody(request: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -62,10 +61,10 @@ function readBody(request: IncomingMessage): Promise<string> {
   });
 }
 
-function tailLines(file: string, count: number): string[] {
+function tailLines(file: string, count?: number): string[] {
   try {
     const lines = readFileSync(file, 'utf8').split('\n').filter((line) => line !== '');
-    return lines.slice(-Math.min(Math.max(count, 1), MAX_TAIL));
+    return count == null ? lines : lines.slice(-Math.max(1, Math.floor(count)));
   } catch {
     return [];
   }
@@ -93,14 +92,15 @@ export function startAdmin(options: AdminOptions): Promise<AdminServer> {
           vision: options.vision(),
           screenshot: options.screenshot(),
           budget: options.budget?.() ?? null,
-          trace: options.trace().slice(-30),
+          trace: options.trace(),
         },
       };
     }
 
     if (request.method === 'GET' && url.pathname === '/logs') {
-      const tail = Number(url.searchParams.get('tail') ?? 50);
-      return { status: 200, json: { file: options.logFile, lines: tailLines(options.logFile, Number.isFinite(tail) ? tail : 50) } };
+      const rawTail = url.searchParams.get('tail');
+      const tail = rawTail == null ? undefined : Number(rawTail);
+      return { status: 200, json: { file: options.logFile, lines: tailLines(options.logFile, tail != null && Number.isFinite(tail) ? tail : undefined) } };
     }
 
     if (request.method === 'POST' && url.pathname === '/message') {

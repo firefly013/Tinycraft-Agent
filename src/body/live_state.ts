@@ -6,21 +6,15 @@
  * 缺字段就写 null/unknown，一个请求不能因为快照失败而发不出去。
  */
 import { createRequire } from 'node:module';
-import { estimateTokens } from '../shared/live_state.ts';
 import { MOB_PROFILES, armorPoints, combatPower, mobProfilePower } from './combat.ts';
 import { nearestBlocks } from './ores.ts';
 import {
   KEY_BLOCK_SET,
-  PERCEPTION_BUDGET_TOKENS,
-  PERCEPTION_LIMIT,
   PERCEPTION_RADIUS,
-  SUMMARY_LINES,
-  budgetedList,
   dist3,
   durabilityFraction,
   num,
   str,
-  summarizeOmitted,
   renderLiveState,
   type LiveBlock,
   type LiveEntity,
@@ -137,15 +131,6 @@ function speedOf(entity: Record<string, unknown>): number | null {
   return Math.round(Math.hypot(vx, vz) * 20 * 100) / 100;
 }
 
-/** 明细行的 token 粗估，用于预算封顶（口径与 compaction 一致）。 */
-function entityCost(e: LiveEntity): number {
-  return estimateTokens(`- ${e.name}#${e.id} ${e.distance}m (${e.x},${e.y},${e.z}) hp ${e.health ?? ''}`);
-}
-
-function blockCost(b: LiveBlock): number {
-  return estimateTokens(`- ${b.name} ${b.distance}m (${b.x},${b.y},${b.z})`);
-}
-
 export interface SampleContext {
   /** mineflayer bot 无类型，采样时全部防御性读取 */
   bot: any;
@@ -194,13 +179,9 @@ export function sampleLiveState(ctx: SampleContext): LiveState {
     position: { x: null, y: null, z: null, yaw: null, pitch: null, dimension: null, biome: null, speed: null },
     environment: { timeOfDay: null, weather: 'Unknown', light: null, lightConfidence: 'unknown', day: null },
     entities: [],
-    entitiesTruncated: 0,
     entitiesPower: 0,
     selfPower: 0,
-    entitiesSummary: [],
     blocks: [],
-    blocksTruncated: 0,
-    blocksSummary: [],
     fluids: [],
     screenshot: { ref: null, unavailableReason: 'no vision data yet' },
     goal: ctx.goal ?? null,
@@ -317,16 +298,11 @@ export function sampleLiveState(ctx: SampleContext): LiveState {
     };
 
     const seen = sampleEntities(bot, feet);
-    // 总威胁按"扫描到的全部敌对实体"算，不是只算截断后列出来的前 16 个。
     empty.entitiesPower = Math.round(seen.reduce((sum, entity) => sum + (entity.power ?? 0), 0) * 10) / 10;
-    empty.entities = budgetedList(seen, PERCEPTION_LIMIT, PERCEPTION_BUDGET_TOKENS, entityCost);
-    empty.entitiesTruncated = Math.max(0, seen.length - empty.entities.length);
-    empty.entitiesSummary = summarizeOmitted(seen.slice(empty.entities.length), feet);
+    empty.entities = seen;
 
     const found = sampleBlocks(bot, feet);
-    empty.blocks = budgetedList(found, PERCEPTION_LIMIT, PERCEPTION_BUDGET_TOKENS, blockCost);
-    empty.blocksTruncated = Math.max(0, found.length - empty.blocks.length);
-    empty.blocksSummary = summarizeOmitted(found.slice(empty.blocks.length), feet);
+    empty.blocks = found;
 
     // 造黑曜石/传送门要的水和岩浆通常离得远，关键方块里看不见；直接扫最近一处。
     // 桶只从源方块取液体：流动的水/岩浆舀不起来，所以只报 level 0 的源头。

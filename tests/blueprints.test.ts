@@ -26,7 +26,7 @@ test('slug 只留 ascii；中文 brief 退回 build', () => {
   assert.equal(slugify('Stone Tower!'), 'stone-tower');
   assert.equal(slugify('  ---  '), 'build');
   assert.equal(slugify('建造一座石塔'), 'build');
-  assert.equal(slugify('a'.repeat(60)).length, 24);
+  assert.equal(slugify('a'.repeat(60)), 'a'.repeat(60));
 });
 
 test('新建蓝图：目录、meta、id 格式都对', () => {

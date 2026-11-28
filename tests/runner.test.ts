@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Runner, MAX_TOOL_OUTPUT_CHARS, clampToolOutput } from '../src/agent/runner.ts';
+import { Runner } from '../src/agent/runner.ts';
 import type { Body } from '../src/shared/body.ts';
 import type { ActionContext } from '../src/shared/body.ts';
 import type { IntakeDeps } from '../src/core/intake.ts';
@@ -457,10 +457,13 @@ test('本地工具走本地、不认领身体；没有本地实现的查询工�
   assert.equal(await runner.toolText('Stop', {}), '身体空闲，没有要停的动作');
 });
 
-test('工具结果超长会留头留尾截断', () => {
-  const text = 'a'.repeat(MAX_TOOL_OUTPUT_CHARS + 1000);
-  const clamped = clampToolOutput(text);
-  assert.ok(clamped.length < text.length);
-  assert.match(clamped, /中间截掉了/);
-  assert.match(clamped, /^a{9000}/);
+test('工具结果超长时完整返回，不截头尾', async () => {
+  const text = 'a'.repeat(25_001);
+  const runner = new Runner({
+    tools: [{ name: 'Read', description: '读全文', mode: 'sync', action: false }],
+    body: { execute: async () => ({ text: 'ok' }) },
+    deps: { submit: async () => {}, write: async () => {}, abort: async () => {} },
+    localTools: { Read: () => text },
+  });
+  assert.equal(await runner.toolText('Read', {}), text);
 });

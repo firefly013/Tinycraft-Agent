@@ -28,9 +28,6 @@ import type { ToolDeclaration, ToolOutcome } from '../shared/tools.ts';
 
 export type { ActionContext, Body } from '../shared/body.ts';
 
-/** 任何动作回执的硬上限：谁生成字符串，谁就必须被截断。 */
-export const MAX_TOOL_OUTPUT_CHARS = 20_000;
-
 /** Stop 等动作收手的上限；超过就不等了（清理照做，但会说明）。 */
 const STOP_SETTLE_MS = 2_000;
 /** 清理本身的上限。 */
@@ -43,16 +40,6 @@ const delay = (ms: number): Promise<void> =>
   });
 /** 单次动作执行的硬上限。旧项目是 8.5 分钟；先对齐到 8 分钟。 */
 export const ACTION_HARD_TIMEOUT_MS = 8 * 60_000;
-
-/** 留头留尾截断；明说截掉多少，不悄悄吞内容。 */
-export function clampToolOutput(text: string, limit: number = MAX_TOOL_OUTPUT_CHARS): string {
-  if (text.length <= limit) return text;
-  const keep = Math.max(200, Math.floor(limit * 0.45));
-  const head = text.slice(0, keep);
-  const tail = text.slice(-keep);
-  const dropped = text.length - head.length - tail.length;
-  return `${head}\n\n……内容太长，中间截掉了 ${dropped.toLocaleString('en-US')} 个字符……\n\n${tail}`;
-}
 
 export interface RunnerOptions {
   tools: readonly ToolDeclaration[];
@@ -68,8 +55,6 @@ export interface RunnerOptions {
   localTools?: Readonly<Record<string, (args: Record<string, unknown>) => string | ToolOutcome | Promise<string | ToolOutcome>>>;
   /** 每条控制面转移的回调（TRACE=1 时接到日志）。 */
   onTrace?: (note: TraceNote) => void;
-  /** 单条工具回执上限（字符）；不给用 20k。小模型上下文小，会调小。 */
-  maxToolOutputChars?: number;
   now?: () => number;
 }
 
@@ -109,7 +94,6 @@ export class Runner {
   >;
   private readonly onTrace: ((note: TraceNote) => void) | null;
   private readonly nowMs: () => number;
-  private readonly maxToolOutputChars: number;
   private readonly trace: Trace;
   private state: ControlState = initialState();
   private active: ActiveCall | null = null;
@@ -131,8 +115,7 @@ export class Runner {
     this.localTools = options.localTools ?? {};
     this.onTrace = options.onTrace ?? null;
     this.nowMs = options.now ?? Date.now;
-    this.maxToolOutputChars = options.maxToolOutputChars ?? MAX_TOOL_OUTPUT_CHARS;
-    this.trace = new Trace(500, this.nowMs());
+    this.trace = new Trace(this.nowMs());
   }
 
   /** 模型调用一个工具。`terminate` = 这一轮到此结束，不要再问模型。 */
@@ -160,9 +143,9 @@ export class Runner {
       const local = this.localTools[name];
       if (local == null) return { text: `没有这个本地工具：${name}` };
       const result = await local(checked.args);
-      if (typeof result === 'string') return { text: clampToolOutput(result, this.maxToolOutputChars) };
+      if (typeof result === 'string') return { text: result };
       return {
-        text: clampToolOutput(result.text, this.maxToolOutputChars),
+        text: result.text,
         ...(result.terminate === true ? { terminate: true } : {}),
       };
     }
@@ -504,7 +487,7 @@ export class Runner {
     }
     const reduction = this.reduce({ kind: 'action-done', epoch: call.epoch });
     const body = reduction.outcome !== 'applied' ? `${reduction.trace.detail}：` : '';
-    return clampToolOutput(`${body}${text}${note}`, this.maxToolOutputChars);
+    return `${body}${text}${note}`;
   }
 
   // ── 反射层：同一时刻只跑一个；高优先级可以抢低优先级 ──

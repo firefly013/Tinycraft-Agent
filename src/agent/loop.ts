@@ -8,6 +8,7 @@ import { GenerationTask, defineTool, hook, section } from '@earendil-works/pi-du
 import type { HookRegistration, PromptSection, ToolRegistration } from '@earendil-works/pi-durable';
 import type { ImageContent, Message, TextContent } from '@earendil-works/pi-ai';
 import type { ToolDeclaration, ToolOutcome } from '../shared/tools.ts';
+import { UNLIMITED_OUTPUT } from '../shared/output.ts';
 
 /** 静态提示词：`tag: false` 表示原样渲染，不加 `<key>` 包裹。 */
 export function systemSection(render: () => string): PromptSection {
@@ -81,6 +82,7 @@ export function toToolRegistration(declaration: ToolDeclaration, run: ToolRun): 
     name: declaration.name,
     description: declaration.description,
     parameters: declarationSchema(declaration),
+    outputLimits: UNLIMITED_OUTPUT,
     execute: async (args: unknown) => {
       const outcome = await run(declaration.name, (args ?? {}) as Record<string, unknown>);
       return {

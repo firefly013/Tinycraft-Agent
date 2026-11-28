@@ -9,11 +9,9 @@ test('转移按相对时间渲染成一行', () => {
   );
 });
 
-test('环形缓冲只留最近的若干条', () => {
-  const trace = new Trace(2, 0);
-  trace.push({ t: 1, kind: 'a', detail: '1' });
-  trace.push({ t: 2, kind: 'b', detail: '2' });
-  trace.push({ t: 3, kind: 'c', detail: '3' });
-  assert.equal(trace.size, 2);
-  assert.deepEqual(trace.recent().map((note) => note.kind), ['b', 'c']);
+test('轨迹保留全部转移，不设环形容量', () => {
+  const trace = new Trace(0);
+  for (let i = 1; i <= 501; i++) trace.push({ t: i, kind: 'step', detail: String(i) });
+  assert.equal(trace.size, 501);
+  assert.equal(trace.recent(1)[0]?.detail, '501');
 });

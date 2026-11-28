@@ -55,7 +55,7 @@ writeFileSync(join(blueprint.dir, 'script.js'), [
 
 const mcBuild = createMcBuild({ dir: mcBuildDir });
 const built = await mcBuild.build('script.js', 'plan.schem', { mc: version, cwd: blueprint.dir });
-if (!built.ok) fail(`编译失败（${built.code}）：${built.stderr.slice(0, 400)}`);
+if (!built.ok) fail(`编译失败（${built.code}）：${built.stderr}`);
 updateBlueprint(blueprintsRoot, blueprint.id, {
   size: built.summary.size,
   blocks: built.summary.blocks,
@@ -129,7 +129,7 @@ if (env.SMOKE_PLACE === '1') {
   const one = createBlueprint(blueprintsRoot, 'smoke single block', { mc: version });
   writeFileSync(join(one.dir, 'script.js'), "builder.set(0, 0, 0, 'stone');");
   const tiny = await mcBuild.build('script.js', 'plan.schem', { mc: version, cwd: one.dir });
-  if (!tiny.ok) fail(`单块蓝图编译失败：${tiny.stderr.slice(0, 300)}`);
+  if (!tiny.ok) fail(`单块蓝图编译失败：${tiny.stderr}`);
   const placedByHand = await primitives.BuildAt(
     { blueprint: one.id, x: target[0], y: target[1], z: target[2], mode: 'place' },
     context,

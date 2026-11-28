@@ -156,16 +156,11 @@ export interface LiveState {
   position: LivePosition;
   environment: LiveEnvironment;
   entities: LiveEntity[];
-  entitiesTruncated: number;
-  /** 感知范围内所有敌对实体的战力总和（含被截断的；食物/中立不算）。 */
+  /** 感知范围内所有敌对实体的战力总和（食物/中立不算）。 */
   entitiesPower: number;
   /** 我自己当前的战斗力（同样的口径：每秒伤害 × 有效血 / 10），方便和上面比较。 */
   selfPower: number;
-  /** 超明细上限的部分按"名字×数量 方位"聚合，远端语义不丢。 */
-  entitiesSummary: string[];
   blocks: LiveBlock[];
-  blocksTruncated: number;
-  blocksSummary: string[];
   /** 全已加载区块里最近的水、岩浆（没有就不列），给造黑曜石/找液体指路。 */
   fluids: LiveBlock[];
   screenshot: LiveScreenshot;
@@ -173,19 +168,8 @@ export interface LiveState {
   meta: LiveMeta;
 }
 
-/** 感知半径（格），与截断上限一起保证快照有界。 */
+/** 感知半径（格）；半径内全部返回，不截断明细。 */
 export const PERCEPTION_RADIUS = 32;
-/** 实体/方块各自最多列几条明细，超了走聚合摘要。 */
-export const PERCEPTION_LIMIT = 16;
-/**
- * 明细列表的 token 预算（对齐 VLM 的每列表 1024）：条数与 token
- * 谁先到谁封顶。名字很长的实体/方块多起来时，先保近处。
- * 口径说明：预算只算明细行本身，表头与下方的聚合摘要（最多
- * SUMMARY_LINES 行）不计入，所以整段实际占用会略超这个数。
- */
-export const PERCEPTION_BUDGET_TOKENS = 1024;
-/** 聚合摘要最多出几行，避免"远合并"自己又变成一坨。 */
-export const SUMMARY_LINES = 6;
 
 /**
  * 主手耐久比例：1 = 全新，0 = 报废；读不到就 null。
@@ -233,54 +217,6 @@ export function compassOf(dx: number, dz: number): string {
   const angle = (Math.atan2(dx, -dz) * 180) / Math.PI;
   const idx = Math.round((((angle % 360) + 360) % 360) / 45) % 8;
   return ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'][idx] as string;
-}
-
-/**
- * 条数与 token 双上限，谁先到谁封顶。永远至少留第一条——
- * 否则"预算很小"会退化成什么都不给，比不知道还糟。
- */
-export function budgetedList<T>(
-  items: readonly T[],
-  limit: number,
-  budgetTokens: number,
-  cost: (item: T) => number,
-): T[] {
-  const kept: T[] = [];
-  let tokens = 0;
-  for (const item of items) {
-    if (kept.length >= limit) break;
-    const c = cost(item);
-    if (kept.length > 0 && tokens + c > budgetTokens) break;
-    kept.push(item);
-    tokens += c;
-  }
-  return kept;
-}
-
-/**
- * 被明细上限挡在外面的部分，按"名字@方位"聚合成摘要行：
- * 远处的信息不该只剩一个 "+N more"。按数量降序。
- */
-export function summarizeOmitted(
-  items: ReadonlyArray<{ name: string; x: number; z: number }>,
-  feet: { x: number; z: number },
-  top = SUMMARY_LINES,
-): string[] {
-  const groups = new Map<string, { name: string; dir: string; count: number }>();
-  for (const item of items) {
-    const dir = compassOf(item.x - feet.x, item.z - feet.z);
-    const key = `${item.name}@${dir}`;
-    const found = groups.get(key);
-    if (found) found.count++;
-    else groups.set(key, { name: item.name, dir, count: 1 });
-  }
-  const sorted = [...groups.values()].sort(
-    (a, b) => b.count - a.count || a.name.localeCompare(b.name) || a.dir.localeCompare(b.dir),
-  );
-  const lines = sorted.slice(0, top).map((g) => `${g.name}×${g.count} ${g.dir}`);
-  // 被 top 挡掉的组要留个记号：远端信息可以粗，但不能悄悄消失。
-  if (sorted.length > lines.length) lines.push(`+${sorted.length - lines.length} more groups`);
-  return lines;
 }
 
 export const KEY_BLOCKS: readonly string[] = Object.freeze([
@@ -459,9 +395,8 @@ const SECTION_RENDERERS: Readonly<Record<string, (s: LiveState) => string[]>> = 
     return [`环境：第 ${fmt(e.day)} 天，时间 ${fmt(e.timeOfDay)}，天气 ${WEATHER[e.weather]}，${light}`];
   },
   entities: (s) => {
-    const truncated = s.entitiesTruncated > 0 ? `（更远 +${s.entitiesTruncated}）` : '';
-    if (s.entities.length === 0) return [`实体：0 个${truncated}`];
-    const lines = [`实体：${s.entities.length} 个${truncated}，敌对总战力 ${s.entitiesPower}`];
+    if (s.entities.length === 0) return ['实体：0 个'];
+    const lines = [`实体：${s.entities.length} 个，敌对总战力 ${s.entitiesPower}`];
     for (const x of s.entities) {
       const bits = [`${x.name}#${x.id}`, `距离 ${x.distance} 格`, `坐标 (${fmt(x.x)}, ${fmt(x.y)}, ${fmt(x.z)})`];
       if (x.power != null) bits.push(`战力 ${x.power}`);
@@ -469,14 +404,11 @@ const SECTION_RENDERERS: Readonly<Record<string, (s: LiveState) => string[]>> = 
       if (x.tag != null) bits.push(x.tag);
       lines.push(`  ${bits.join('，')}`);
     }
-    if (s.entitiesSummary.length > 0) lines.push(`更远：${s.entitiesSummary.map(itemShort).join('、')}`);
     return lines;
   },
   blocks: (s) => {
-    const truncated = s.blocksTruncated > 0 ? `（更远 +${s.blocksTruncated}）` : '';
-    if (s.blocks.length === 0) return [`关键方块：0 个${truncated}`];
-    // 同名方块合并成一行：给数量 + 最近的一处坐标。矿脉列 16 行没有意义，
-    // 模型要动手时用最近那处，挖完再看新快照。
+    if (s.blocks.length === 0) return ['关键方块：0 个'];
+    // 同名方块合并成一行：给数量 + 最近的一处坐标；模型要动手时用最近那处。
     const groups = new Map<string, { count: number; nearest: LiveBlock }>();
     for (const block of s.blocks) {
       const found = groups.get(block.name);
@@ -487,12 +419,11 @@ const SECTION_RENDERERS: Readonly<Record<string, (s: LiveState) => string[]>> = 
       }
     }
     const ordered = [...groups.values()].sort((a, b) => a.nearest.distance - b.nearest.distance);
-    const lines = [`关键方块：${s.blocks.length} 个${truncated}`];
+    const lines = [`关键方块：${s.blocks.length} 个`];
     for (const group of ordered) {
       const n = group.nearest;
       lines.push(`  ${n.name} ×${group.count}，最近 ${n.distance} 格，坐标 (${fmt(n.x)}, ${fmt(n.y)}, ${fmt(n.z)})`);
     }
-    if (s.blocksSummary.length > 0) lines.push(`更远：${s.blocksSummary.map(itemShort).join('、')}`);
     return lines;
   },
   fluids: (s) => {

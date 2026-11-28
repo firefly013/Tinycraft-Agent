@@ -165,11 +165,12 @@ test('蓝图缺 plan.schem：明确报错', async () => {
   env.cleanup();
 });
 
-test('抽查：方块对不上时给出数量', async () => {
-  const env = setup(planWith(['/setblock 0 64 0 minecraft:stone replace']));
+test('抽查：超过 20 格时仍检查全部方块', async () => {
+  const commands = Array.from({ length: 25 }, (_, i) => `/setblock ${i} 64 0 minecraft:stone replace`);
+  const env = setup(planWith(commands));
   env.bot.blockAt = () => ({ name: 'dirt' });
   const text = await env.build();
-  assert.match(text, /有 1 格对不上/);
+  assert.match(text, /抽查 25 格，有 25 格对不上/);
   env.cleanup();
 });
 

@@ -56,10 +56,14 @@ test('build 失败：不抛异常，原样带回 stdout/stderr 与退出码', as
   assert.equal(outcome.stderr, 'boom');
 });
 
-test('build 成功但输出不是 JSON：明确报错', async () => {
-  const fake = fakeRun({ code: 0, stdout: 'not json', stderr: '' });
+test('build 成功但输出不是 JSON：错误信息保留完整输出', async () => {
+  const stdout = `${'x'.repeat(500)}END-MARKER`;
+  const fake = fakeRun({ code: 0, stdout, stderr: '' });
   const mc = createMcBuild({ dir: '/repo/mc-build', run: fake.run });
-  await assert.rejects(() => mc.build('script.js', 'plan.schem', { mc: '1.21.4', cwd: CHECKS }), /不是 JSON/);
+  await assert.rejects(
+    () => mc.build('script.js', 'plan.schem', { mc: '1.21.4', cwd: CHECKS }),
+    (error: unknown) => error instanceof Error && error.message.includes('END-MARKER'),
+  );
 });
 
 test('emit：默认不带 --clear-air，显式要求才带', async () => {

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { checkArgs } from '../src/shared/tools.ts';
 import type { ToolDeclaration } from '../src/shared/tools.ts';
+import { runnerTools } from '../src/agent/loop.ts';
 
 const MINE: ToolDeclaration = {
   name: 'mineBlock',
@@ -52,4 +53,10 @@ test('类型不对：int 不收小数，float 收', () => {
 
   const amount: ToolDeclaration = { ...count, params: { n: { type: 'float' } } };
   assert.equal(checkArgs(amount, { n: 1.5 }).ok, true);
+});
+
+test('注册给模型的工具没有输出长度上限', () => {
+  const [tool] = runnerTools({ tool: async () => ({ text: 'ok' }) }, [MINE]);
+  assert.equal(tool?.outputLimits?.maxBytes, Infinity);
+  assert.equal(tool?.outputLimits?.maxLines, Infinity);
 });

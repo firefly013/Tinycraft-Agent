@@ -448,7 +448,6 @@ export function wireBody(bot: AnyBot, options: BodyOptions): GameBody {
   const orderText = (targets: readonly ReturnType<typeof scanTargets>[number][]): string =>
     [...targets]
       .sort((a, b) => mobPower(b) - mobPower(a) || a.distance - b.distance)
-      .slice(0, 4)
       .map((target) => `${target.name}(${mobPower(target)})`)
       .join('、');
 

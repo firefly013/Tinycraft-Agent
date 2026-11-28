@@ -14,6 +14,7 @@ import type { HookRegistration, ModelRef, ToolRegistration } from '@earendil-wor
 import type { ModelThinkingLevel, Models } from '@earendil-works/pi-ai';
 import type { BuildSummary, McBuild } from '../body/mcbuild.ts';
 import { listBlueprints } from './blueprints.ts';
+import { UNLIMITED_OUTPUT } from '../shared/output.ts';
 import type { DesignInput, DesignResult, DesignSession } from './architect.ts';
 import { openRuntime } from './runtime.ts';
 
@@ -84,9 +85,6 @@ interface FinishPayload {
 const textResult = (text: string): { output: [{ type: 'text'; text: string }] } => ({
   output: [{ type: 'text' as const, text }],
 });
-
-const clamp = (text: string, limit: number): string =>
-  text.length <= limit ? text : `${text.slice(0, limit)}\n……（截断 ${text.length - limit} 字符）`;
 
 function within(root: string, target: string): boolean {
   const full = resolve(target);
@@ -179,8 +177,8 @@ export function createDesignSession(deps: DesignSessionDeps): DesignSession {
             note(`runMcBuild ${args.join(' ')}`);
             const result = await deps.mcBuild.run(args, dir);
             note(`runMcBuild → 退出码 ${result.code}`);
-            const out = clamp(result.stdout.trim(), 12_000);
-            const err = clamp(result.stderr.trim(), 4_000);
+            const out = result.stdout.trim();
+            const err = result.stderr.trim();
             return textResult(
               `退出码 ${result.code}\n${out === '' ? '(stdout 为空)' : out}` + (err === '' ? '' : `\n[stderr]\n${err}`),
             );
@@ -199,7 +197,6 @@ export function createDesignSession(deps: DesignSessionDeps): DesignSession {
             const all = listBlueprints(deps.blueprintsRoot, query == null ? {} : { text: query });
             if (all.length === 0) return textResult('（还没有蓝图）');
             const lines = all
-              .slice(0, 40)
               .map(
                 (blueprint) =>
                   `${blueprint.id} ${blueprint.size.x}x${blueprint.size.y}x${blueprint.size.z} · ${blueprint.blocks} 格${blueprint.reusable ? ' 可复用' : ''}${blueprint.tags.length === 0 ? '' : ` [${blueprint.tags.join(',')}]`}`,
@@ -258,7 +255,7 @@ export function createDesignSession(deps: DesignSessionDeps): DesignSession {
             if (mc == null) return textResult('还不知道目标 MC 版本，不能交卷');
             const outcome = await deps.mcBuild.build('script.js', 'plan.schem', { mc, cwd: dir });
             if (!outcome.ok) {
-              const detail = (outcome.stderr || outcome.stdout || '').trim().slice(0, 2000);
+              const detail = (outcome.stderr || outcome.stdout || '').trim();
               note(`finish 失败：编译 ${outcome.code}`);
               return textResult(`交卷失败：编译没过（退出码 ${outcome.code}）\n${detail}`);
             }
@@ -281,13 +278,15 @@ export function createDesignSession(deps: DesignSessionDeps): DesignSession {
         }),
       ];
 
+      const fullTools = tools.map((tool) => ({ ...tool, outputLimits: UNLIMITED_OUTPUT }));
+
       const runtime = await openRuntime({
         models: deps.models,
         model: deps.model,
         ...(deps.thinkingLevel == null ? {} : { thinkingLevel: deps.thinkingLevel }),
         storage: new MemoryStorage(),
         systemPrompt: () => architectPrompt(vision),
-        tools,
+        tools: fullTools,
         hooks: deps.hooks ?? [],
         name: `architect:${input.blueprintId}`,
       });

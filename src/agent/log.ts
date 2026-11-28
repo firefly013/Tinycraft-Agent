@@ -2,7 +2,7 @@
  * 日志：结构化 agent 日志 + 请求快照 + 生命周期 hooks。
  *
  * 三样东西：
- *   1. `agent-YYYYMMDD.log`：一行一个 JSON，级别/模块/字段截断；同步写盘，
+ *   1. `agent-YYYYMMDD.log`：一行一个 JSON，级别/模块/字段完整；同步写盘，
  *      崩了最后几行也还在；写不进去绝不拖垮 agent。
  *   2. `request-<页>.log`：模型这次**实际收到的消息列**。每次请求覆盖当前页，
  *      上下文压缩时翻页（新一代上下文 = 新文件）。
@@ -18,9 +18,6 @@ import type { HookRegistration } from '@earendil-works/pi-durable';
 import type { Message } from '@earendil-works/pi-ai';
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
-
-/** 单条字段的序列化上限：日志要能读，不能把一行撑成几 MB。 */
-export const FIELD_LIMIT = 2_000;
 
 export interface LoggerOptions {
   /** 落盘目录，通常是 `./bots/<name>/logs`。 */
@@ -50,21 +47,15 @@ export function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** 压成一行可读的短文本；过长截断，序列化不了退成字符串。 */
-function short(value: unknown): unknown {
-  if (value == null || typeof value === 'number' || typeof value === 'boolean') return value;
-  if (typeof value === 'string') {
-    return value.length <= FIELD_LIMIT ? value : `${value.slice(0, FIELD_LIMIT)}…[+${value.length - FIELD_LIMIT}]`;
-  }
-  let text: string;
+/** 保留原值；只有不能 JSON 序列化时才退成明确文本。 */
+function serializable(value: unknown): unknown {
+  if (value == null || typeof value === 'number' || typeof value === 'boolean' || typeof value === 'string') return value;
   try {
-    const json = JSON.stringify(value);
-    if (json == null) return String(value);
-    text = json;
+    JSON.stringify(value);
+    return value;
   } catch {
     return '[unserializable]';
   }
-  return text.length <= FIELD_LIMIT ? value : `${text.slice(0, FIELD_LIMIT)}…[+${text.length - FIELD_LIMIT}]`;
 }
 
 function dayStamp(date: Date): string {
@@ -88,7 +79,7 @@ export function createLogger(options: LoggerOptions): Logger {
 
   const write = (level: LogLevel, mod: string, data?: Record<string, unknown>): void => {
     const record: Record<string, unknown> = { ts: now().toISOString(), level, mod };
-    for (const [key, value] of Object.entries(data ?? {})) record[key] = short(value);
+    for (const [key, value] of Object.entries(data ?? {})) record[key] = serializable(value);
     const line = JSON.stringify(record);
     try {
       if (!ready) {

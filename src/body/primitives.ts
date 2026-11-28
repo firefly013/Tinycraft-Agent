@@ -1610,8 +1610,7 @@ export function makePrimitives(bot: any, deps: PrimitiveDeps = {}): Record<strin
         // 小模型常把名字写成复数/近似词：给一个候选，别让它在一个错名字上反复撞。
         const stem = name.replace(/s$/, '');
         const candidates = Object.keys(bot.registry?.itemsByName ?? {})
-          .filter((candidate) => stem.length >= 3 && candidate.includes(stem))
-          .slice(0, 3);
+          .filter((candidate) => stem.length >= 3 && candidate.includes(stem));
         return `没有叫 ${name} 的物品${candidates.length > 0 ? `；是不是 ${candidates.join(' / ')}？` : ''}`;
       }
       const before = countInventory(bot, name);

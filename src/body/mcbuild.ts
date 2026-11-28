@@ -77,14 +77,12 @@ export type EmitOutcome = { ok: true; plan: EmitPlan } | { ok: false; code: numb
 
 export type McBuild = ReturnType<typeof createMcBuild>;
 
-const MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
-
 function spawnRun(node: string, cli: string, argv: string[], cwd: string, timeoutMs: number): Promise<RunResult> {
   return new Promise((resolve) => {
     execFile(
       node,
       [cli, ...argv],
-      { cwd, timeout: timeoutMs, maxBuffer: MAX_OUTPUT_BYTES, windowsHide: true },
+      { cwd, timeout: timeoutMs, maxBuffer: Infinity, windowsHide: true },
       (error, stdout, stderr) => {
         const code = error == null ? 0 : typeof error.code === 'number' ? error.code : 1;
         resolve({ code, stdout: String(stdout ?? ''), stderr: String(stderr ?? '') });
@@ -99,8 +97,7 @@ function parseJson<T>(stdout: string, label: string): T {
   try {
     return JSON.parse(text) as T;
   } catch (error: unknown) {
-    const head = text.slice(0, 200).replace(/\s+/g, ' ');
-    throw new Error(`${label} 的输出不是 JSON（${error instanceof Error ? error.message : String(error)}）：${head}`);
+    throw new Error(`${label} 的输出不是 JSON（${error instanceof Error ? error.message : String(error)}）：${text}`);
   }
 }
 

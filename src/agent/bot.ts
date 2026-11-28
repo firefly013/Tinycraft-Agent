@@ -92,12 +92,8 @@ export interface BaselineOptions {
   logger?: Logger;
   /** 交给模型的工具名子集（小模型/精简模式）；不给就是全部 CATALOG。 */
   tools?: readonly string[];
-  /** 单条工具回执的字符上限；不给用 Runner 默认（20k）。 */
-  maxToolOutputChars?: number;
   /** 上下文压缩策略；不给用 pi-durable 默认。 */
   compaction?: CompactionSettings;
-  /** 公聊长度上限（每个回复只发第一行、最多这么多字）；不给就不限。小模型防刷屏。 */
-  chatMaxChars?: number;
   /** 每轮强制模型调用工具（required）；默认 auto。小模型靠这个不再"只回文字"。 */
   toolChoice?: 'auto' | 'required';
   /** 额外 hook（Token 预算等）；由装配方注入，不改变工具面。 */
@@ -167,12 +163,7 @@ export async function startBaseline(options: BaselineOptions): Promise<Baseline>
         : typeof message.content === 'string'
           ? message.content
           : '';
-      const maxChars = options.chatMaxChars ?? null;
-      const spoken =
-        maxChars == null
-          ? text
-          : (text.split('\n').find((line) => line.trim() !== '') ?? '').slice(0, maxChars);
-      for (const chunk of splitChatText(spoken)) {
+      for (const chunk of splitChatText(text)) {
         try {
           options.say(chunk);
         } catch {
@@ -237,7 +228,6 @@ export async function startBaseline(options: BaselineOptions): Promise<Baseline>
 
   runner = new Runner({
     tools: declared,
-    ...(options.maxToolOutputChars == null ? {} : { maxToolOutputChars: options.maxToolOutputChars }),
     body: options.body,
     deps: createIntakeDeps(runtime.conversation, {
       onError: (error) => console.error('[投递]', error),

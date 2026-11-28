@@ -26,7 +26,7 @@ import type { Architecture } from './agent/architect.ts';
 import { describeBlueprint, listBlueprints } from './agent/blueprints.ts';
 import { createDesignSession } from './agent/design_session.ts';
 import { createTokenBudget, DEFAULT_TOKEN_BUDGET } from './agent/budget.ts';
-import { startBaseline } from './agent/bot.ts';
+import { splitChatText, startBaseline } from './agent/bot.ts';
 import type { Baseline, BuildingBridge } from './agent/bot.ts';
 import { createMcBuild } from './body/mcbuild.ts';
 import {
@@ -44,8 +44,7 @@ import { createBody } from './body/index.ts';
 import type { GameBody } from './body/index.ts';
 import { REFLEXES } from './body/reflexes.ts';
 import type { LogEvent } from './core/events.ts';
-/** 聊天框播报用：工具名 + 参数；Minecraft 单条聊天有长度上限，截断。 */
-const TOOL_CHAT_MAX = 230;
+/** 聊天框播报用：工具名 + 参数；超长时由 splitChatText 无损分块。 */
 function formatToolCall(name: string, args: Record<string, unknown>): string {
   let detail = '';
   try {
@@ -53,8 +52,7 @@ function formatToolCall(name: string, args: Record<string, unknown>): string {
   } catch {
     detail = '{}';
   }
-  const line = '[tool] ' + name + (detail === '{}' ? '' : ' ' + detail);
-  return line.length <= TOOL_CHAT_MAX ? line : line.slice(0, TOOL_CHAT_MAX - 1) + '…';
+  return '[tool] ' + name + (detail === '{}' ? '' : ' ' + detail);
 }
 
 
@@ -94,15 +92,12 @@ const version = bot.config.mc?.version ?? env.MC_VERSION;
 const auth = bot.config.mc?.auth ?? (env.MC_AUTH === 'microsoft' ? 'microsoft' : 'offline');
 const vision = bot.config.vision ?? env.VISION !== '0';
 const combat = bot.config.combat ?? env.COMBAT !== '0';
-// 小模型上下文控制：工具子集 / 回执上限 / 精简快照 / 压缩阈值。
+// 小模型上下文控制：工具子集 / 精简快照 / 压缩阈值；工具回执始终完整返回。
 // 这些开关只影响"模型看到多少"，不改变控制面。
 const toolSubset = (env.TOOLS ?? '')
   .split(',')
   .map((name) => name.trim())
   .filter((name) => name !== '');
-const toolOutputChars = Number(env.TOOL_OUTPUT_CHARS);
-const maxToolOutputChars =
-  Number.isFinite(toolOutputChars) && toolOutputChars > 0 ? Math.floor(toolOutputChars) : null;
 // 小模型防"只回文字不调工具"：provider 请求体强制 tool_choice=required（无工具时自动跳过）。
 const toolChoice = env.TOOL_CHOICE === 'required' ? 'required' : 'auto';
 const SNAPSHOT_PROFILES: Record<string, readonly string[]> = {
@@ -131,7 +126,6 @@ const compaction =
         backgroundTokens: numEnv('COMPACT_BACKGROUND_TOKENS', 0),
       };// 在游戏聊天框里逐条打印模型工具调用（默认关，避免吵）。
 const toolChat = bot.config.toolChat ?? env.TOOL_CHAT === '1';
-const chatMaxChars = bot.config.chatMaxChars ?? (env.CHAT_MAX_CHARS == null ? undefined : Number(env.CHAT_MAX_CHARS));
 let thinkingLevel;
 try {
   thinkingLevel = resolveThinkingLevel(bot.config, env.THINKING);
@@ -268,7 +262,7 @@ const building: BuildingBridge | null =
         cancel: (taskId) => architecture!.cancel(taskId),
         list: (query) => {
           const found = listBlueprints(blueprintsRoot!, query == null ? {} : { text: query });
-          const lines = found.slice(0, 30).map(describeBlueprint);
+          const lines = found.map(describeBlueprint);
           const running = architecture!.list().filter((task) => task.state === 'running');
           if (running.length > 0) {
             lines.push(`进行中：${running.map((task) => `${task.taskId}（${(task.elapsedMs / 1000).toFixed(0)}s）`).join('、')}`);
@@ -319,18 +313,20 @@ const baseline: Baseline = await startBaseline({
   reflexes: REFLEXES,
   ...(building == null ? {} : { building }),
   ...(toolSubset.length === 0 ? {} : { tools: toolSubset }),
-  ...(maxToolOutputChars == null ? {} : { maxToolOutputChars }),
   compaction,
   onTrace: (note) => {
     logger.with('trace').debug({ kind: note.kind, detail: note.detail });
     if (verbose) console.log(`[控制面] ${note.kind.padEnd(9)} ${note.detail}`);
   },
   ...(toolChat
-    ? { onToolCall: (name: string, callArgs: Record<string, unknown>) => say(formatToolCall(name, callArgs)) }
+    ? {
+        onToolCall: (name: string, callArgs: Record<string, unknown>) => {
+          for (const chunk of splitChatText(formatToolCall(name, callArgs))) say(chunk);
+        },
+      }
     : {}),
   logger,
   say,
-  ...(chatMaxChars == null ? {} : { chatMaxChars }),
   ...(toolChoice === 'auto' ? {} : { toolChoice }),
   extraHooks: [budget.hook],
 });
@@ -394,7 +390,7 @@ const shutdown = async (): Promise<void> => {
   await admin?.close();
   logger.with('boot').info({ event: 'shutdown', session: dbPath });
   console.log(`\n[${username}] ${baseline.runner.describe()}`);
-  for (const line of baseline.runner.traceLines.slice(-40)) console.log(`  ${line}`);
+  for (const line of baseline.runner.traceLines) console.log(`  ${line}`);
   body.close();
   await baseline.close();
   await storage.close?.(BACKGROUND_CONTEXT);

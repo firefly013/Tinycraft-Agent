@@ -37,6 +37,7 @@ function makeOps(initial: Record<string, string>, inventory: Record<string, numb
   const cells = new Map<string, string>(Object.entries(initial));
   const calls: string[] = [];
   let failPlace = false;
+  let failNext = 0;
   const ops: PlaceOps = {
     stateAt: (pos) => (cells.has(key(pos)) ? (cells.get(key(pos)) as string) : AIR),
     solidAt: (pos) => {
@@ -56,12 +57,15 @@ function makeOps(initial: Record<string, string>, inventory: Record<string, numb
     },
     place: async (pos, state) => {
       calls.push(`place ${key(pos)}`);
-      if (failPlace) throw new Error('够不着');
+      if (failPlace || failNext > 0) {
+        if (failNext > 0) failNext--;
+        throw new Error('够不着');
+      }
       cells.set(key(pos), state);
     },
     stop: () => {},
   };
-  return { ops, cells, calls, fail: () => (failPlace = true) };
+  return { ops, cells, calls, fail: () => (failPlace = true), failNext: (count: number) => { failNext = count; } };
 }
 
 function setup(plan: EmitPlan, world: Record<string, string>, inventory: Record<string, number> = { stone: 99 }) {
@@ -159,6 +163,18 @@ test('真实执行器：单块失败跳过，连续 10 块才整体停', async (
   assert.match(text, /施工中断：连续失败 10 块/);
   assert.match(text, /够不着/);
   assert.equal(env.fake.calls.filter((call) => call.startsWith('place')).length, 10);
+  env.cleanup();
+});
+
+test('真实执行器：失败明细超过 8 条时全部返回', async () => {
+  const blocks = Array.from({ length: 19 }, (_, i) => ({ x: i, y: 1, z: 0, state: 'minecraft:stone' }));
+  const world: Record<string, string> = {};
+  for (let i = 0; i < 19; i++) world[`${i},0,0`] = 'minecraft:stone';
+  const env = setup(planOfBlocks(blocks), world);
+  env.fake.failNext(9);
+  const text = await env.build();
+  assert.match(text, /跳过 9/);
+  assert.equal((text.match(/够不着/g) ?? []).length, 9);
   env.cleanup();
 });
 

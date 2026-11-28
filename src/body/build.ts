@@ -150,7 +150,7 @@ async function emitPlan(deps: BuildDeps, id: string, origin: { x: number; y: num
   const { dir, schem } = schematicPath(deps, id);
   const outcome = await deps.mcBuild.emit(schem, origin, { cwd: dir, clearAir });
   if (!outcome.ok) {
-    const detail = (outcome.stderr || outcome.stdout || '').trim().split('\n').slice(0, 3).join(' / ');
+    const detail = (outcome.stderr || outcome.stdout || '').trim();
     throw new Error(`施工计划失败：${detail === '' ? `mc-build 退出码 ${outcome.code}` : detail}`);
   }
   return outcome.plan;
@@ -262,11 +262,11 @@ async function runCommandUndo(
   return `还原完成：${records.length} 格（命令）`;
 }
 
-/** 抽查 20 格：名字对得上就算过；对不上给数量，不逐格刷屏。 */
+/** 抽查全部非空气格：名字对得上就算过；对不上给数量，不逐格刷屏。 */
 function verifySample(bot: AnyBot, plan: EmitPlan): string {
   if (typeof bot.blockAt !== 'function') return '跳过抽查（假 bot 没有 blockAt）';
   const nonAir = plan.blocks.filter((block) => block.state !== 'minecraft:air');
-  const sample = nonAir.slice(0, 20);
+  const sample = nonAir;
   let mismatch = 0;
   for (const block of sample) {
     const found = bot.blockAt(new Vec3(block.x, block.y, block.z));
@@ -320,10 +320,8 @@ async function runPlacePlan(
     } catch (error: unknown) {
       skipped += 1;
       consecutive += 1;
-      if (details.length < 8) {
-        const reason = error instanceof Error ? error.message : String(error);
-        details.push(`(${step.x},${step.y},${step.z}) ${reason}`);
-      }
+      const reason = error instanceof Error ? error.message : String(error);
+      details.push(`(${step.x},${step.y},${step.z}) ${reason}`);
     }
     context.checkpoint({ mode: 'place', index: index + 1 });
     if (consecutive >= 10) {

@@ -243,8 +243,9 @@ VISION=0 BOT=alice npm start
 | `TOKEN_BUDGET` | `30000000` | 单会话 token 上限，`0` = 不限 |
 | `MC_BUILD_DIR` | — | `mc-build` 仓库路径；配了才启用建筑工具 |
 | `TOOLS` | 全部 | 只把列出的工具交给模型 |
-| `TOOL_OUTPUT_CHARS` | `20000` | 单条工具回执字符上限 |
 | `SNAPSHOT` | 全量 | `small` = 精简快照 |
+
+工具回执、文件读取、shell 输出、日志字段、感知明细和施工报告都完整返回，不做长度截断；Minecraft 聊天只做 256 字符无损分块。
 
 ## 可观测性
 

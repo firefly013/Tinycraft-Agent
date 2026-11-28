@@ -111,6 +111,25 @@ test('快照字段：身体/装备/背包/位置/环境/实体/方块/当前动�
   assert.equal(state.goal, '砍三棵树');
 });
 
+test('感知明细超过 16 条时全部保留，不做聚合截断', () => {
+  const bot = fakeBot();
+  delete bot.entities['5'];
+  for (let i = 0; i < 20; i++) {
+    bot.entities[String(100 + i)] = { id: 100 + i, name: 'zombie', position: { x: 10 + i, y: 64, z: -3 } };
+  }
+  const baseAt = bot.blockAt;
+  bot.blockAt = (pos: { x: number; y: number; z: number }) => {
+    if (pos.x >= 10 && pos.x < 30 && pos.y === 64 && pos.z === -3) return { ...baseAt(pos), name: 'iron_ore' };
+    return baseAt(pos);
+  };
+  const state = snapshotFromBot(bot, null, null);
+  assert.equal(state.entities.filter((entity: { name: string }) => entity.name === 'zombie').length, 20);
+  assert.equal(state.blocks.filter((block: { name: string }) => block.name === 'iron_ore').length, 21);
+  const text = renderSnapshot(state);
+  assert.match(text, /zombie#119/);
+  assert.match(text, /iron_ore ×21/);
+});
+
 test('液体扫描：报告最近的水/岩浆源方块，跳过流动液体', () => {
   const bot = fakeBot();
   bot.registry.blocksByName = { water: { id: 9 }, lava: { id: 11 } };

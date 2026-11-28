@@ -68,7 +68,7 @@ const parseLine = (raw: string): string | null => {
       if (event[key] != null) bits.push(`${key}=${String(event[key])}`);
     }
     const text = typeof event.text === 'string' ? event.text : '';
-    return `  ${mod}/${level}: ${bits.join(' ')}${text === '' ? '' : ' · ' + text.slice(0, 160)}`;
+    return `  ${mod}/${level}: ${bits.join(' ')}${text === '' ? '' : ' · ' + text}`;
   } catch {
     return null;
   }

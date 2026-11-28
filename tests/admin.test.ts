@@ -61,6 +61,32 @@ test('状态口：带 token 才能读，返回 describe/动作/截图/trace', as
   }
 });
 
+test('日志口：超过 500 行时仍返回全部行', async () => {
+  const file = join(mkdtempSync(join(tmpdir(), 'baseline-admin-full-')), 'agent.log');
+  writeFileSync(file, Array.from({ length: 501 }, (_, i) => `line-${i}`).join('\n'));
+  const server = await startAdmin({
+    port: 0,
+    username: 'Bot',
+    describe: () => 'body=idle',
+    action: () => '空闲',
+    vision: () => 'off',
+    trace: () => [],
+    screenshot: () => null,
+    logFile: file,
+    message: async () => {},
+    stop: () => '停',
+  });
+  try {
+    const response = await fetch(`${server.url}/logs?tail=9999`);
+    const body = (await response.json()) as { lines: string[] };
+    assert.equal(body.lines.length, 501);
+    assert.equal(body.lines[0], 'line-0');
+    assert.equal(body.lines.at(-1), 'line-500');
+  } finally {
+    await server.close();
+  }
+});
+
 test('发消息：注入一条用户消息；空文本/坏 JSON 拒绝', async () => {
   const sent: string[] = [];
   const { server } = await serve({ sent });

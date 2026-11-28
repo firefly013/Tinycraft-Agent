@@ -60,9 +60,7 @@ export function slugify(brief: string): string {
   const slug = brief
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 24)
-    .replace(/-+$/g, '');
+    .replace(/^-+|-+$/g, '');
   return slug === '' ? 'build' : slug;
 }
 

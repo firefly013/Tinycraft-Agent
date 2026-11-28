@@ -29,14 +29,13 @@ test('结构化日志：一行一个 JSON，带时间/级别/模块', () => {
   assert.equal(record.ts, '2026-01-02T03:04:05.000Z');
 });
 
-test('结构化日志：超长字段截断，行仍然可解析', () => {
+test('结构化日志：超长字段完整落盘，行仍然可解析', () => {
   const logger = createLogger({ dir: tempDir() });
-  logger.info({ big: 'x'.repeat(5_000) });
+  const big = 'x'.repeat(5_000);
+  logger.info({ big });
 
   const record = JSON.parse(readFileSync(logger.file, 'utf8').trim()) as Record<string, string>;
-  assert.ok(record.big != null);
-  assert.ok(record.big.length < 5_000);
-  assert.match(record.big, /…\[\+3000\]/);
+  assert.equal(record.big, big);
 });
 
 test('请求日志：同一页每次覆盖，round 累加；压缩翻页换新文件', () => {
